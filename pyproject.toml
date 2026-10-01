@@ -1,0 +1,17 @@
+[project]
+name = "rl-study"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "B777B2056-2", email = "md82b2127@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "base-rl",
+]
