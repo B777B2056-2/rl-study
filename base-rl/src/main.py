@@ -11,7 +11,7 @@ if __name__ == "__main__":
     env = create_env(env_type=EnvType.FrozenLake, is_slippery=False)
 
     # 2. 创建算法
-    agent = create_agent(agent_type=AgentType.Q_LEARNING, env=env)
+    agent = create_agent(agent_type=AgentType.SARSA, env=env)
 
     # 3. 创建 Trainer
     trainer = Trainer(
