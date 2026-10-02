@@ -1,4 +1,4 @@
-import numpy as np
+from plotter import Plotter
 
 
 class EvalModeMixin:
@@ -29,51 +29,25 @@ class _EvalContext:
 
 
 class Evaluator:
-    def __init__(self, env, n_episodes=100, seed=None, success_fn=None):
+    def __init__(self, env, n_episodes=100, seed=None, plotter=None):
         self._env = env
         self._n_episodes = n_episodes
         self._seed = seed
-        self._success_fn = success_fn
+        self._plotter = plotter or Plotter(window=0)
 
-    def evaluate(self, agent) -> dict:
+    def evaluate(self, agent, save_path=None, show=True):
         with agent.eval_mode():
-            return self._run(agent)
+            rewards, successes = [], []
 
-    def _run(self, agent) -> dict:
-        rewards, lengths, successes = [], [], []
+            for ep in range(self._n_episodes):
+                seed = self._seed + ep if self._seed is not None else None
+                self._env.reset(seed=seed)
+                self._env.action_space.seed(seed)
 
-        for i in range(self._n_episodes):
-            if self._seed is not None:
-                state, info = self._env.reset(seed=self._seed + i)
-            else:
-                state, info = self._env.reset()
+                metrics = agent.run_episode()
+                rewards.append(metrics["reward"])
+                successes.append(metrics["success"])
 
-            done = False
-            ep_reward = 0.0
-            ep_length = 0
-
-            while not done:
-                action = agent.act(state)
-                state, reward, terminated, truncated, info = self._env.step(action)
-                done = terminated or truncated
-                ep_reward += reward
-                ep_length += 1
-
-            rewards.append(ep_reward)
-            lengths.append(ep_length)
-            if self._success_fn is not None:
-                successes.append(1.0 if self._success_fn(ep_reward, ep_length, info) else 0.0)
-            else:
-                successes.append(1.0 if ep_reward > 0 else 0.0)
-
-        r = np.array(rewards)
-        l = np.array(lengths)
-        s = np.array(successes)
-        return {
-            "mean_reward": float(r.mean()),
-            "std_reward": float(r.std()),
-            "min_reward": float(r.min()),
-            "max_reward": float(r.max()),
-            "mean_length": float(l.mean()),
-            "success_rate": float(s.mean()),
-        }
+            self._plotter.plot_eval(rewards, successes, save=save_path, show=show)
+    
+            self._env.close()

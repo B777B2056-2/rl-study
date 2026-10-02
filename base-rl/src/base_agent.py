@@ -6,7 +6,7 @@ class BaseAgent(EvalModeMixin):
 
     子类必须实现：
         - act(state, deterministic)    : 给定状态返回动作
-        - train_episode()              : 训练一个回合，返回指标 dict
+        - run_episode()              : 训练一个回合，返回指标 dict
 
     子类可选实现：
         - update_schedule(n_episode)   : 更新 epsilon 等调度参数
@@ -45,8 +45,8 @@ class BaseAgent(EvalModeMixin):
             f"{self.__class__.__name__} 必须实现 act() 方法"
         )
 
-    def train_episode(self) -> dict:
-        """训练一个回合，返回本回合的指标。
+    def run_episode(self) -> dict:
+        """运行一个回合，返回本回合的指标。
 
         返回:
             metrics: dict，键是指标名，值是标量。例如:
@@ -57,8 +57,8 @@ class BaseAgent(EvalModeMixin):
                     "loss":    0.032,  # 平均损失（DQN/PPO）
                 }
 
-        Trainer 会把 metrics 里的每个键自动记录到 Plotter，
-        命名为 "train_<key>"，例如 "train_reward"。
+        Trainer/Evaluator 会把 metrics 里的每个键自动记录到 Plotter，
+        命名为 "train_<key>/eval_<key>"，例如 "train_reward"。
 
         子类实现要点:
             1. 调用 env.reset() 开始新回合；
@@ -68,7 +68,7 @@ class BaseAgent(EvalModeMixin):
             5. 返回包含至少 "reward" 的 dict。
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} 必须实现 train_episode() 方法"
+            f"{self.__class__.__name__} 必须实现 run_episode() 方法"
         )
 
     # ============================================================

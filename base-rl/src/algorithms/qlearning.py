@@ -37,7 +37,7 @@ class QLearning(BaseAgent):
         # 利用：随机数大于等于epsilon，则选取最优动作（即Q表里当前状态的最大奖励对应的动作）
         return np.argmax(self._q_table[state])
 
-    def train_episode(self) -> dict:
+    def run_episode(self) -> dict:
         """更新Q表"""
         # 重置环境
         state, _ = self._env.reset()
