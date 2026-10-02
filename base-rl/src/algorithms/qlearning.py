@@ -14,6 +14,11 @@ class QLearning(BaseAgent):
 
     # epsilon-贪婪随机探索
     def _epsilon_greedy(self, state, epsilon: float):
+        """评估时纯贪心；训练时 ε-贪婪"""
+        # 评估模式：不允许探索
+        if self.is_evaluating:
+            return np.argmax(self._q_table[state])
+        
         # 探索：随机数小于epsilon，则对动作空间进行一次采样，返回随机的action
         if np.random.rand() < epsilon:
             return self._env.action_space.sample()
@@ -25,20 +30,8 @@ class QLearning(BaseAgent):
         cur_epsilon = self._config.epsilon * (self._config.epsilon_decay ** n_episode)
         self._epsilon = max(self._config.min_epsilon, cur_epsilon)
 
-    def act(self, state):
-        """评估时纯贪心；训练时 ε-贪婪"""
-        # 评估模式：不允许探索
-        if self.is_evaluating:
-            return np.argmax(self._q_table[state])
-
-        # 探索：随机数小于epsilon，则对动作空间进行一次采样，返回随机的action
-        if np.random.rand() < self._epsilon:
-            return self._env.action_space.sample()
-        # 利用：随机数大于等于epsilon，则选取最优动作（即Q表里当前状态的最大奖励对应的动作）
-        return np.argmax(self._q_table[state])
-
     def run_episode(self) -> dict:
-        """更新Q表"""
+        """运行一个回合"""
         # 重置环境
         state, _ = self._env.reset()
         total_reward = 0    

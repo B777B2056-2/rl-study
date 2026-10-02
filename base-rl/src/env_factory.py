@@ -34,16 +34,22 @@ class FrozenLakeShaping(gym.Wrapper):
         return next_state, reward, terminated, truncated, info
 
 class EnvType(Enum):
-    FrozenLake = "q_learning"
+    FrozenLake = "FrozenLake-v1"
+    CartPoleV1 = "CartPole-v1"
 
 
 def _make_frozen_lake_env(is_slippery: bool):
-    env = gym.make("FrozenLake-v1", is_slippery=False)
+    env = gym.make(EnvType.FrozenLake.value, is_slippery=is_slippery)
     env = FrozenLakeShaping(env)
+    return env
+
+def _make_cart_pole_v1_env(is_slippery: bool):
+    env = gym.make(EnvType.CartPoleV1.value)
     return env
 
 _FACTORIES = {
     EnvType.FrozenLake: _make_frozen_lake_env,
+    EnvType.CartPoleV1: _make_cart_pole_v1_env,
 }
 
 def create_env(env_type: EnvType, is_slippery: bool):

@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 
 class Plotter:
@@ -83,6 +84,7 @@ class Plotter:
 
         plt.tight_layout()
         if save:
+            os.makedirs(os.path.dirname(save), exist_ok=True)
             plt.savefig(save, dpi=120, bbox_inches="tight")
             print(f"[Plotter] 已保存到 {save}")
         if show:
@@ -123,6 +125,7 @@ class Plotter:
 
         plt.tight_layout()
         if save:
+            os.makedirs(os.path.dirname(save), exist_ok=True)
             plt.savefig(save, dpi=120, bbox_inches="tight")
             print(f"[Plotter] 已保存到 {save}")
         if show:
