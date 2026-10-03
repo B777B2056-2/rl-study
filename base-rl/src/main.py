@@ -78,8 +78,32 @@ def dqn():
     evaluator = Evaluator(env=eval_env, n_episodes=100, seed=SEED)
     evaluator.evaluate(agent, save_path='outputs/dqn/eval.png')
 
+def ppo():
+    # 1. 创建环境
+    SEED = 42
+    env = create_env(env_type=EnvType.CartPoleV1, is_slippery=False)
+
+    # 2. 创建算法
+    agent = create_agent(agent_type=AgentType.PPO, env=env)
+
+    # 3. 创建 Trainer
+    trainer = Trainer(
+        agent=agent,
+        train_env=env,
+        seed=SEED,
+        n_episodes=500,
+    )
+
+    # 4. 训练
+    trainer.train(action_names=["左", "右"], save_path='outputs/ppo/train.png')
+
+    # 5. 评估
+    eval_env = create_env(env_type=EnvType.CartPoleV1, is_slippery=False)
+    evaluator = Evaluator(env=eval_env, n_episodes=100, seed=SEED)
+    evaluator.evaluate(agent, save_path='outputs/ppo/eval.png')
 
 if __name__ == "__main__":
     # q_learning()
     # sarsa()
-    dqn()
+    # dqn()
+    ppo()

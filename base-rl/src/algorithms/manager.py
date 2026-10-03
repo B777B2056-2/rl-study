@@ -1,14 +1,16 @@
 from enum import Enum
-from config import QLearningConfig, DQNConfig
+from config import QLearningConfig, DQNConfig, PPOConfig
 from algorithms.qlearning import QLearning
 from algorithms.sarsa import Sarsa
 from algorithms.dqn import DQN
+from algorithms.ppo import PPO
 
 
 class AgentType(Enum):
     Q_LEARNING = "q_learning"
     SARSA = "sarsa"
     DQN = "dqn"
+    PPO = "ppo"
 
 
 def _make_q_learning_agent(env) -> QLearning:
@@ -24,7 +26,7 @@ def _make_q_learning_agent(env) -> QLearning:
 
     return QLearning(env=env, config=config)
 
-def _make_sarsa_agent(env) -> QLearning:
+def _make_sarsa_agent(env) -> Sarsa:
     config = QLearningConfig(
         n_states=env.observation_space.n,
         n_actions=env.action_space.n,
@@ -37,7 +39,7 @@ def _make_sarsa_agent(env) -> QLearning:
 
     return Sarsa(env=env, config=config)
 
-def _make_dqn_agent(env) -> QLearning:
+def _make_dqn_agent(env) -> DQN:
     config = DQNConfig(
         replay_buffer_cap=10000,
         n_states=env.observation_space.shape[0],
@@ -55,10 +57,29 @@ def _make_dqn_agent(env) -> QLearning:
 
     return DQN(env=env, config=config)
 
+def _make_ppo_agent(env) -> PPO:
+    config = PPOConfig(
+        batch_size=64,
+        n_states=env.observation_space.shape[0],
+        n_actions=env.action_space.n,
+        learning_rate=3e-4,
+        n_traces=2048,
+        n_hidden_actor=64,
+        n_hidden_critic=64,
+        n_epoch=10,
+        gamma=0.99,
+        lambda_val=0.95,
+        clip_eps=0.2,
+        device="cpu",
+    )
+
+    return PPO(env=env, config=config)
+
 _FACTORIES = {
     AgentType.Q_LEARNING: _make_q_learning_agent,
     AgentType.SARSA: _make_sarsa_agent,
     AgentType.DQN: _make_dqn_agent,
+    AgentType.PPO: _make_ppo_agent,
 }
 
 
