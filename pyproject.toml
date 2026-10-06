@@ -14,4 +14,5 @@ package = false
 [tool.uv.workspace]
 members = [
     "base-rl",
+    "llm-rl",
 ]
