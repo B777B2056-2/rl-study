@@ -8,6 +8,7 @@ class LoraConfig:
     alpha: float
     rank: float
     target_modules: Tuple[str]
+    use_qlora: bool = False
     dropout: float = 0.0
 
 class LoraAdaptLinear(torch.nn.Module):
@@ -20,6 +21,8 @@ class LoraAdaptLinear(torch.nn.Module):
 
         # 继承原模块的类型和设备
         dtype = original_linear.weight.dtype
+        if not dtype.is_floating_point:
+            dtype = torch.bfloat16              # QLoRA 兜底
         device = original_linear.weight.device
 
         """
@@ -47,7 +50,8 @@ class LoraAdaptLinear(torch.nn.Module):
             y = x @ w.T + scaling * dropout(x) @ B @ A
         """
         y_original = self._original(x)
-        y_lora = self._scaling * (self._dropout(x) @ self._B @ self._A)
+        x_dropped = self._dropout(x).to(self._B.dtype)
+        y_lora = self._scaling * (x_dropped @ self._B @ self._A)
         return y_original + y_lora
 
     def merge_weights(self):

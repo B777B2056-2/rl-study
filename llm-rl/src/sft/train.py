@@ -5,7 +5,6 @@ import torch
 import math
 from tqdm import tqdm
 import os
-from .lora import *
 
 
 @dataclass
@@ -14,19 +13,13 @@ class SFTConfig(object):
     max_lr: float
     n_lr_warmup_steps: int
     dataset: InstructDataset
-    save_dir: str
     grad_accum: int = 0
     max_grad_norm: float = 1.0
-    lora_config: LoraConfig = None  # lora配置，为None时代表不使用lora
     device: str = "cuda"
 
 class SFTTrainer(object):
     """SFT训练器"""
     def __init__(self, tokenizer, model, config: SFTConfig):
-        # 若有需要，则注入lora层
-        if config.lora_config is not None:
-            inject_lora(model, config.lora_config)
-
         self._tokenizer = tokenizer
         self._model = model.to(config.device)
         self._config = config
@@ -109,8 +102,7 @@ class SFTTrainer(object):
                     self._optimizer.zero_grad()
 
             self._plotter.log(name="train_loss", value=total_loss / step_cnt, step=epoch)
-        self._save()
-        self._plotter.plot(names=['train_loss'], save=os.path.join(self._config.save_dir, 'train.png'))
+        self._plotter.plot(names=['train_loss'])
     
     @torch.no_grad()
     def eval(self):
@@ -140,36 +132,23 @@ class SFTTrainer(object):
 
             self._plotter.log(name="test_token_acc", value=acc)
 
-        self._plotter.plot(names=['test_token_acc'], save=os.path.join(self._config.save_dir, 'eval.png'))
+        self._plotter.plot(names=['test_token_acc'])
         self._model.train()
-
-    def _save(self):
-        """保存：LoRA adapter + 合并后的完整模型"""
-        os.makedirs(self._config.save_dir, exist_ok=True)
-
-        # lora
-        if self._config.lora_config is not None:
-            # 1. 保存 LoRA adapter（几 MB）
-            save_lora(self._model, os.path.join(self._config.save_dir, "lora.pt"))
-
-            # 2. 保存合并后的完整模型
-            import copy
-            merged = copy.deepcopy(self._model)
-            merge_lora(merged)
-            merged.save_pretrained(os.path.join(self._config.save_dir, "merged"))
-        else:
-            self._model.save_pretrained(self._config.save_dir)
-
-        self._tokenizer.save_pretrained(self._config.save_dir)
-        print(f"[SFTTrainer] 模型已保存到 {self._config.save_dir}")
 
 
 if __name__ == "__main__":
-    from src.models import Qwen2_5
+    from src.models import Qwen2_5, LoraConfig
     from src.data import GSM8kDatasetAdapter
 
-    tokenizer = Qwen2_5().tokenizer()
-    model = Qwen2_5().model()
+    qwen2_5 = Qwen2_5(lora_config=LoraConfig(
+        alpha=16,
+        rank=8,
+        dropout=0.05,
+        use_qlora=True,
+        target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
+    ))
+    tokenizer = qwen2_5.tokenizer()
+    model = qwen2_5.model()
 
     gsm8k_adapter = GSM8kDatasetAdapter()
     gsm8k_sft_dataset = InstructDataset(tokenizer=tokenizer, adapter=gsm8k_adapter, batch_size=1)
@@ -179,15 +158,9 @@ if __name__ == "__main__":
         max_lr=2e-4,
         n_lr_warmup_steps=150,
         dataset=gsm8k_sft_dataset,
-        save_dir='./outputs/gsm8k-sft-qwen2_5-0_5B',
         grad_accum=8,
-        lora_config=LoraConfig(
-            alpha=16,
-            rank=8,
-            dropout=0.05,
-            target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
-        ),
     ))
 
     sft_trainer.train()
     sft_trainer.eval()
+    qwen2_5.save(save_dir='./outputs/gsm8k-sft-qwen2_5-0_5B')
