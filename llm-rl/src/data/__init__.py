@@ -1,2 +1,3 @@
 from .instruct import InstructDataset
-from .instruct import GSM8kDatasetAdapter
+from .adapters import GSM8kDatasetAdapter
+from .rl_dataset import RLDataset

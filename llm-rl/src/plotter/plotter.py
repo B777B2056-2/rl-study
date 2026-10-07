@@ -127,3 +127,20 @@ class Plotter(object):
             plt.show()
 
         plt.close(fig)
+
+    def state_dict(self) -> dict:
+        return {
+            "data": {
+                k: [(int(x), float(y)) for x, y in v]
+                for k, v in self._data.items()
+            },
+            "window": self._window,
+        }
+
+    def load_state_dict(self, state: dict):
+        self._data = {
+            k: [(int(x), float(y)) for x, y in v]
+            for k, v in state["data"].items()
+        }
+        if "window" in state:
+            self._window = state["window"]

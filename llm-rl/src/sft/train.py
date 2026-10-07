@@ -4,12 +4,13 @@ from src.plotter import Plotter
 import torch
 import math
 from tqdm import tqdm
-import os
+from src.ckpt import *
 
 
 @dataclass
 class SFTConfig(object):
     n_epoch: int
+    ckpt_config: CkptConfig
     max_lr: float
     n_lr_warmup_steps: int
     dataset: InstructDataset
@@ -17,9 +18,13 @@ class SFTConfig(object):
     max_grad_norm: float = 1.0
     device: str = "cuda"
 
-class SFTTrainer(object):
+class SFTTrainer(CheckpointableTrainer):
     """SFT训练器"""
     def __init__(self, tokenizer, model, config: SFTConfig):
+        self._plotter = Plotter()
+        ckpt_manager = CheckpointManager(config=config.ckpt_config)
+        super().__init__(ckpt_manager, self._plotter)
+
         self._tokenizer = tokenizer
         self._model = model.to(config.device)
         self._config = config
@@ -34,9 +39,6 @@ class SFTTrainer(object):
         self._optimizer = torch.optim.AdamW(self._trainable_params, lr=config.max_lr)
         # 余弦退火调度器
         self._scheduler = torch.optim.lr_scheduler.LambdaLR(self._optimizer, lr_lambda=self._warmup_cosine_lr_lambda)
-
-        # 绘图
-        self._plotter = Plotter()
 
     def _warmup_cosine_lr_lambda(self, current_step: int) -> float:
         """学习率调度：预热 + 余弦退火"""
@@ -56,7 +58,9 @@ class SFTTrainer(object):
         """SFT后训练"""
         self._model.train()
 
-        for epoch in range(self._config.n_epoch):
+        self.maybe_resume()
+
+        for epoch in range(self._epoch, self._config.n_epoch):
             total_loss = 0.0
             step_cnt = 0
 
@@ -101,6 +105,9 @@ class SFTTrainer(object):
                     # 7. 清空梯度
                     self._optimizer.zero_grad()
 
+                # 5. 定期保存 checkpoint
+                self.maybe_save()
+
             self._plotter.log(name="train_loss", value=total_loss / step_cnt, step=epoch)
         self._plotter.plot(names=['train_loss'])
     
@@ -134,6 +141,35 @@ class SFTTrainer(object):
 
         self._plotter.plot(names=['test_token_acc'])
         self._model.train()
+
+    def _state_dict(self) -> dict:
+        """返回训练状态"""
+        return {
+            "model_lora": {
+                n: p.data.cpu()
+                for n, p in self._model.named_parameters()
+                if p.requires_grad
+            },
+            "optimizer": self._optimizer.state_dict(),
+            "scheduler": self._scheduler.state_dict() if self._scheduler else None,
+            "rng": get_rng_state(),
+        }
+
+    def _load_state_dict(self, state: dict):
+        """从 state 恢复"""
+        # 恢复 LoRA 参数
+        current = dict(self._model.named_parameters())
+        for n, p in state["model_lora"].items():
+            current[n].data.copy_(p.to(current[n].device))
+
+        # 恢复 optimizer / scheduler
+        self._optimizer.load_state_dict(state["optimizer"])
+        if self._scheduler is not None and state["scheduler"] is not None:
+            self._scheduler.load_state_dict(state["scheduler"])
+
+        # 恢复 RNG
+        if "rng" in state:
+            set_rng_state(state["rng"])
 
 
 if __name__ == "__main__":
