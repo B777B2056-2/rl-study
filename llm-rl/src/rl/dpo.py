@@ -190,7 +190,8 @@ class DPOTrainer(CheckpointableTrainer):
 
         n = 0
 
-        for batch in tqdm(self._test_loader, desc="Evaluating"):
+        test_data_loader = self._config.dataset.build_test_data_loader()
+        for batch in tqdm(test_data_loader, desc="Evaluating"):
             input_ids = batch["input_ids"].to(self._config.device)
             input_attention_mask = batch["input_attention_mask"].to(self._config.device)
 
