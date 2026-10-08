@@ -41,9 +41,12 @@ class Actor(torch.nn.Module):
         for p in base_model.parameters():
             p.requires_grad = False
 
-        # 注入 LoRA
-        inject_lora(base_model, lora_config)
+        if lora_config is not None:
+            # 注入 LoRA
+            inject_lora(base_model, lora_config)
+
         self._actor = base_model
+        self._lora_config = lora_config
 
     def forward(self, input_ids, attention_mask):
         # 获取actor模型前向传播的输出
@@ -55,7 +58,7 @@ class Actor(torch.nn.Module):
         return self._actor.generate(*args, **kwargs)
 
     def model(self):
-        return self._base
+        return self._actor
 
     def lora_config(self):
         return self._lora_config
@@ -331,13 +334,14 @@ class PPOTrainer(CheckpointableTrainer):
 
         return total_loss / self._config.n_epoch, total_policy_loss / self._config.n_epoch, total_value_loss / self._config.n_epoch
 
-    def train(self) -> dict:
+    def train(self) -> None:
         """ppo训练"""
         # 从 checkpoint 恢复
         self.maybe_resume()
 
         train_data_loader = self._config.dataset.build_train_data_loader()
         for ep in range(self._epoch, self._config.n_episode):
+            self.set_epoch(ep)
             # 0. 遍历训练集
             step_cnt, loss, policy_loss, value_loss = 0, 0.0, 0.0, 0.0
             for batch in tqdm(train_data_loader, desc="Training"):

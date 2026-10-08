@@ -28,6 +28,21 @@ class BaseDatasetAdapter(ABC):
         """构造标准答案（用于奖励函数）"""
         pass
 
+    @abstractmethod
+    def build_prompt(self, data) -> str:
+        """返回 prompt 文本（用户问题）"""
+        pass
+
+    @abstractmethod
+    def build_chosen(self, data) -> str:
+        """返回 chosen 的 response 文本（更好的回答）"""
+        pass
+
+    @abstractmethod
+    def build_rejected(self, data) -> str:
+        """返回 rejected 的 response 文本（更差的回答）"""
+        pass
+
 
 class GSM8kDatasetAdapter(BaseDatasetAdapter):
     def __init__(self):
@@ -58,3 +73,22 @@ class GSM8kDatasetAdapter(BaseDatasetAdapter):
         if "####" in answer:
             return answer.split("####")[-1].strip()
         return answer.strip()
+
+    def build_prompt(self, data) -> str:
+        return data["question"]
+
+    def build_chosen(self, data) -> str:
+        return data["answer"]
+
+    def build_rejected(self, data) -> str:
+        """把最终答案改错，构造 rejected"""
+        answer = data["answer"]
+        if "####" in answer:
+            parts = answer.split("####")
+            correct = parts[-1].strip()
+            try:
+                wrong = str(int(correct) + 1)
+            except ValueError:
+                wrong = correct + "0"
+            return parts[0] + "#### " + wrong
+        return answer + " (wrong answer)"

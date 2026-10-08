@@ -1,4 +1,7 @@
-# 学习笔记
+# 强化学习与 LLM 微调学习笔记
+
+> **格式约定**：`##/###` 标题为主干内容，`>` 引用块为补充说明、小知识点、类比、注意事项。
+
 ---
 
 # 目录
@@ -23,10 +26,10 @@
 | 策略 | $\pi(a\|s)$ | 状态到动作的映射（概率分布） |
 | 折扣因子 | $\gamma \in [0,1]$ | 未来奖励的折扣 |
 
-**目标**：找到策略 $\pi^*$，使期望累计折扣奖励最大：
+**目标**：找到策略 $\pi^{\ast}$，使期望累计折扣奖励最大：
 
 $$
-\pi^* = \arg\max_\pi \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t R_{t+1}\right]
+\pi^{\ast} = \arg\max_\pi \mathbb{E}_\pi\left[\sum_{t=0}^{\infty} \gamma^t R_{t+1}\right]
 $$
 
 > $\mathbb{E}_\pi$：在策略 $\pi$ 下、考虑环境和动作随机性后的期望。
@@ -58,7 +61,7 @@ $$
 **最优时**：
 
 $$
-V^*(s) = \max_a Q^*(s,a)
+V^{\ast}(s) = \max_a Q^{\ast}(s,a)
 $$
 
 > **V 和 Q 的区别**：
@@ -80,7 +83,7 @@ $$
 **贝尔曼最优方程**：
 
 $$
-Q^*(s,a) = \mathbb{E}\left[r + \gamma \max_{a'} Q^*(s',a') \mid s,a\right]
+Q^{\ast}(s,a) = \mathbb{E}\left[r + \gamma \max_{a'} Q^{\ast}(s',a') \mid s,a\right]
 $$
 
 > **两个方程的关键区别**：最优方程含 $\max$，期望方程不含。这决定了 Q-learning 和 SARSA 的区别。
@@ -226,7 +229,7 @@ $$
 **逼近贝尔曼最优方程**：
 
 $$
-Q^*(s,a) = \mathbb{E}\left[r + \gamma \max_{a'} Q^*(s',a')\right]
+Q^{\ast}(s,a) = \mathbb{E}\left[r + \gamma \max_{a'} Q^{\ast}(s',a')\right]
 $$
 
 ### 更新公式
@@ -517,14 +520,14 @@ labels    = [-100] * len(prompt) + [response tokens] + [EOS]
 ### 损失函数
 
 $$
-L^{\text{SFT}} = -\frac{1}{N}\sum_{t=1}^{N} \log \pi_\theta(y_t \mid y_{<t}, x)
+L^{\text{SFT}} = -\frac{1}{N}\sum_{t=1}^{N} \log \pi_\theta(y_t \mid y_{\lt t}, x)
 $$
 
 > $x$：prompt。
 >
 > $y_t$：response 的第 $t$ 个 token。
 >
-> $y_{<t}$：response 的前 $t-1$ 个 token。
+> $y_{\lt t}$：response 的前 $t-1$ 个 token。
 >
 > $N$：response 的 token 数。
 
@@ -875,7 +878,7 @@ $$
 ### 奖励设计
 
 $$
-r_t = \begin{cases} -\beta \cdot \text{KL}_t & t < R \\ -\beta \cdot \text{KL}_t + r^{\text{RM}} & t = R \end{cases}
+r_t = \begin{cases} -\beta \cdot \text{KL}_t & t \lt R \\ -\beta \cdot \text{KL}_t + r^{\text{RM}} & t = R \end{cases}
 $$
 
 > **中间 token**：只有 KL 惩罚。
@@ -942,7 +945,247 @@ $$
 
 ---
 
-## 3.5 三者关系
+## 3.5 DPO（直接偏好优化）
+
+### 学习目标
+
+**在 SFT 模型基础上，用偏好对直接优化策略，跳过 RM 和 RL 循环。**
+
+$$
+\max_\pi \mathbb{E}_{(x, y_w, y_l)}\left[\log \sigma\left(\beta \log \frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \log \frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\right)\right]
+$$
+
+> 形式和 RLHF 目标一致，但**数据是固定的偏好对**。
+
+### 核心洞见：解析解
+
+**RLHF 目标的最优策略有闭式解**：
+
+$$
+\pi^{\ast}(y|x) = \frac{1}{Z(x)} \pi_{\text{ref}}(y|x) \exp\left(\frac{r_{\text{RM}}(x,y)}{\beta}\right)
+$$
+
+> $Z(x)$：归一化常数（对所有 $y$ 求和）。
+>
+> **含义**：最优策略是"参考策略"乘上"奖励的指数"。
+
+**反解出奖励**：
+
+$$
+r_{\text{RM}}(x,y) = \beta \log \frac{\pi^{\ast}(y|x)}{\pi_{\text{ref}}(y|x)} + \beta \log Z(x)
+$$
+
+> **含义**：**奖励 = β × 策略相对参考的对数概率比 + 常数**
+>
+> **这一步是 DPO 的核心洞见**：奖励不需要单独学，它已经"藏在"策略里了。
+
+**代入 Bradley-Terry 后 $\log Z(x)$ 被差分消掉**：
+
+$$
+r(x,y_w) - r(x,y_l) = \beta \log \frac{\pi(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \log \frac{\pi(y_l|x)}{\pi_{\text{ref}}(y_l|x)}
+$$
+
+> **关键**：偏好模型只需要"两个回答的奖励差"，不需要奖励本身，所以 $\log Z(x)$ 消掉。
+
+### 损失函数
+
+$$
+L_{\text{DPO}} = -\mathbb{E}_{(x, y_w, y_l)}\left[\log \sigma\left(\beta \log \frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \beta \log \frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)}\right)\right]
+$$
+
+**逐项理解**：
+
+| 项 | 含义 |
+|---|---|
+| $\pi_\theta$ | 当前策略（Policy，要训练） |
+| $\pi_{\text{ref}}$ | 参考模型（Reference，冻结） |
+| $y_w$ | chosen（更好的回答） |
+| $y_l$ | rejected（更差的回答） |
+| $\beta$ | KL 系数，通常 0.1~0.5 |
+| $\sigma$ | sigmoid |
+
+**sigmoid 内的内容**：
+
+$$
+\underbrace{\beta \log \frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)}}_{\text{chosen 的隐式奖励}} - \underbrace{\beta \log \frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)}}_{\text{rejected 的隐式奖励}}
+$$
+
+**含义**：让"chosen 相对参考的偏好程度"比"rejected 相对参考的偏好程度"更大。
+
+> **为什么用"相对参考"而不是绝对概率**：
+>
+> - 直接用 $\log \pi_\theta(y_w)$ 和 $\log \pi_\theta(y_l)$，训练会让所有回答的概率都变大或变小，不稳定
+> - 用比值 $\log \frac{\pi_\theta(y)}{\pi_{\text{ref}}(y)}$：含义是"相比 SFT 模型，当前策略在 $y$ 上提高了多少"，是相对提升
+> - 参考模型起"锚点"作用，类似 PPO 的 KL 惩罚
+
+### 和 PPO 的关系
+
+**数学上等价**：DPO 是 RLHF 目标的解析解。
+
+**工程上不同**：
+
+| 维度 | PPO | DPO |
+|---|---|---|
+| 模型数 | 4 | 2 |
+| 采样 | ✅ | ❌ |
+| 每步前向 | 多次（生成 + KL + Critic） | **4 次** |
+| 损失 | clip + value | sigmoid |
+| 训练速度 | 慢 | 快 |
+| 稳定性 | 难调 | 稳定 |
+
+> **关键区别：数据来源**
+>
+> - PPO 优化的是"策略能生成的所有回答"（在线采样）
+> - DPO 优化的是"数据里出现的偏好对"（离线数据）
+> - **两者目标函数一样，但数据来源不同，所以最优解不同**
+>
+> **DPO 在"已知偏好"上做得好；PPO 能"发现新的偏好"。**
+>
+> 只有当数据是"上帝视角"（覆盖所有可能），两者才等价。现实中数据永远不完美，所以两者效果不同，互补。
+
+### 数据结构
+
+每条偏好对：
+
+```json
+{
+  "prompt": "1+1=?",
+  "chosen": "1+1=2，所以答案是 2。#### 2",
+  "rejected": "1+1=2，所以答案是 3。#### 3"
+}
+```
+
+**返回 batch**：
+
+```python
+{
+    "input_ids":               (B, P),
+    "input_attention_mask":    (B, P),
+    "chosen_ids":              (B, R1),
+    "chosen_attention_mask":   (B, R1),
+    "rejected_ids":            (B, R2),
+    "rejected_attention_mask": (B, R2),
+}
+```
+
+> **注意**：prompt 和 response **分开存**，训练时再拼接。
+
+### 核心实现：`_calc_log_prob`
+
+**功能**：对已有的 response 算一次前向的 log 概率（给已有回答打分，不生成）。
+
+```python
+def _calc_log_probs(model, input_ids, input_attention_mask,
+                    response_ids, response_attention_mask):
+    # 1. 拼接为完整序列
+    full_ids = torch.concat([input_ids, response_ids], dim=1)
+    full_attention_mask = torch.concat(
+        [input_attention_mask, response_attention_mask], dim=1
+    )
+
+    # 2. 一次前向
+    prompt_len = input_ids.shape[1]
+    full_logits = model(full_ids, full_attention_mask)      # (B, P+R, V)
+    response_logits = full_logits[:, prompt_len-1:-1, :]    # 切 response（差一位）
+    log_probs = F.log_softmax(response_logits, dim=-1)      # (B, R, V)
+
+    # 3. 取实际 token 的 log 概率
+    log_probs = log_probs.gather(
+        -1, response_ids.unsqueeze(-1)
+    ).squeeze(-1)                                           # (B, R)
+
+    # 4. 忽略 padding
+    log_probs = log_probs * response_attention_mask.float()
+
+    # 5. 整段求和
+    log_probs = log_probs.sum(dim=-1)                       # (B,)
+    return log_probs
+```
+
+**关键点**：
+
+> **`gather` 的作用**：从"整个词表的 log 概率 `(B, R, V)`"里，挑出"实际那个 token"的 log 概率 `(B, R)`。
+>
+> **为什么用 `prompt_len-1:-1`**：语言模型是"用位置 $t$ 预测位置 $t+1$"，所以差一位。
+>
+> - 位置 `P-1` 的 logits 预测 response 第 1 个 token
+> - 位置 `P+R-2` 的 logits 预测 response 第 R 个 token
+>
+> **为什么整段求和**：整段 response 的 log 概率 = 每个 token log 概率之和。
+>
+> **为什么用 `response_attention_mask`**：padding 位置的 log_prob 是"假的"，要置零。
+
+### 算法流程
+
+```
+1. 从数据集取一个偏好对 (prompt, chosen, rejected)
+2. Policy 前向 2 次：算 logp_chosen, logp_rejected（带梯度）
+3. Reference 前向 2 次：算 ref_chosen, ref_rejected（no_grad）
+4. 算隐式奖励差：
+     logits = β × ((logp_chosen - ref_chosen) - (logp_rejected - ref_rejected))
+5. 算损失：
+     loss = -logsigmoid(logits).mean()
+6. 反向传播 + 更新 Policy
+7. 下一个 batch
+```
+
+**4 次前向 + 1 次反向，和 SFT 一样简单。**
+
+> **DPO 里没有"生成"**：response 是数据集给的，模型只负责"给已有 response 打分"。
+>
+> 对比 PPO：
+>
+> - PPO 采样时：Actor 生成 response（R 次前向）
+> - DPO：不生成，直接对数据里的 chosen / rejected 做一次前向
+
+### 训练配置
+
+| 参数 | 典型值 |
+|---|---|
+| `learning_rate` | 5e-7 ~ 5e-6 |
+| `beta` | 0.1 ~ 0.5 |
+| `batch_size` | 1 ~ 8 |
+| `n_epoch` | 1 ~ 3 |
+| `max_length` | 512 ~ 1024 |
+| `max_prompt_length` | 256 |
+| `grad_clip_eps` | 1.0 |
+
+> **beta 的作用**：
+>
+> | β | 效果 |
+> |---|---|
+> | 0.01 | 偏离参考大，可能过拟合 |
+> | **0.1** | **标准** |
+> | 0.5 | 保守，学得慢 |
+> | 1.0 | 太保守，几乎不动 |
+>
+> beta 越大，越"紧贴"参考模型。
+
+### 评估指标
+
+**准确率**：`chosen_reward > rejected_reward` 的比例。
+
+```python
+acc = ((policy_chosen_logp - ref_chosen_logp)
+       > (policy_rejected_logp - ref_rejected_logp)).float().mean()
+```
+
+**训练成功标志**：`acc` 从 ~0.5 升到 ~0.9，`loss` 从 ~0.69 降到 ~0.3。
+
+### 显存占用（0.5B + 6GB）
+
+| 组件 | 显存 |
+|---|---|
+| Policy（bf16 + LoRA） | 1 GB |
+| Reference（bf16，冻结） | 1 GB |
+| 激活值 | 1~2 GB |
+| **总计** | **约 3~4 GB** ✅ |
+
+**比 PPO 省 1~2 GB**（少 Critic 和 RM）。
+
+---
+
+## 3.6 四者关系
 
 ### 算法演进
 
@@ -960,24 +1203,26 @@ RM（奖励模型）
     ↓ 损失：Bradley-Terry
     ↓
 
-PPO（强化学习）
+PPO / DPO
     ↓ 让模型"回答更好"
-    ↓ 数据：prompt（自己采样）
-    ↓ 损失：clip + value
-    ↓ 模型：4 个
+    ├── PPO：在线采样 + 4 个模型
+    └── DPO：离线偏好 + 2 个模型
 ```
 
 ### 对比总表
 
-| 维度 | SFT | PPO |
-|---|---|---|
-| 数据 | (prompt, response) | prompt |
-| 学习方式 | 监督 | 强化 |
-| 损失 | 交叉熵 | clip + value |
-| 需要 RM | ❌ | ✅ |
-| 需要 Ref | ❌ | ✅ |
-| 需要采样 | ❌ | ✅ |
-| 模型数 | 1 | 4 |
+| 维度 | SFT | PPO | DPO |
+|---|---|---|---|
+| 数据 | (prompt, response) | prompt | (prompt, chosen, rejected) |
+| 学习方式 | 监督 | 强化 | 监督（隐式强化） |
+| 损失 | 交叉熵 | clip + value | sigmoid |
+| 需要 RM | ❌ | ✅ | ❌ |
+| 需要 Critic | ❌ | ✅ | ❌ |
+| 需要采样 | ❌ | ✅ | ❌ |
+| 需要 Ref | ❌ | ✅ | ✅ |
+| 模型数 | 1 | 4 | 2 |
+| 显存 | 低 | 高 | 中 |
+| 稳定性 | 稳定 | 需调参 | 稳定 |
 
 ### 学习目标对照
 
@@ -987,8 +1232,32 @@ PPO（强化学习）
 | LoRA | 用低秩增量逼近全参微调的效果 |
 | QLoRA | 同 LoRA，但省显存 |
 | PPO | 最大化 RM 分数，同时不偏离 SFT 太远 |
+| DPO | 让 chosen 的隐式奖励 > rejected 的隐式奖励 |
 
-### 从 SFT 到 PPO 的完整链路
+### PPO vs DPO 的哲学区别
+
+**PPO**：
+
+- 优化"策略能生成的所有回答"
+- 在线采样，能探索数据外的好回答
+- 上限高，但调参难、成本高
+
+**DPO**：
+
+- 优化"数据里出现的偏好对"
+- 离线数据，学不到数据外的好回答
+- 稳定、简单、成本低
+
+> **类比**：
+>
+> - DPO = 从题库学，能学会题库里的偏好
+> - PPO = 自己做题 + 打分，能探索题库外
+>
+> **两者目标函数一样，但数据来源不同，所以最优解不同，互补。**
+
+### 完整链路
+
+**方案 A：SFT → RM → PPO**
 
 ```
 1. SFT
@@ -1007,36 +1276,83 @@ PPO（强化学习）
    - 输出：PPO 模型
 ```
 
+**方案 B：SFT → DPO**
+
+```
+1. SFT
+   - 输入：原始模型 + (prompt, response)
+   - 输出：SFT 模型
+        ↓
+2. DPO
+   - Policy：SFT 模型 + 新 LoRA
+   - Reference：SFT 模型（冻结）
+   - 数据：(prompt, chosen, rejected)
+   - 输出：DPO 模型
+```
+
+**方案 C：SFT → DPO → PPO（推荐）**
+
+```
+SFT → DPO（暖启动）→ PPO（精调）
+```
+
+> **为什么 PPO 前先做 DPO**：
+>
+> 1. **暖启动**：给 PPO 一个更好的起点，不需要从"完全不懂偏好"开始
+> 2. **稳定性**：减少 PPO 震荡、发散
+> 3. **抗刷分**：DPO 已经学过"什么格式是好的"，不容易被 RM 骗
+> 4. **成本低**：DPO 便宜，PPO 贵，先用便宜的把模型拉起来
+>
+> **类比**：SFT 是小学，DPO 是中学，PPO 是大学。从小学直接跳大学容易崩。
+
 ### LoRA / QLoRA 在其中的位置
 
-> **LoRA 是一种"参数高效微调方法"，可以用于 SFT、PPO 的任何阶段**：
+> **LoRA 是一种"参数高效微调方法"，可以用于 SFT、PPO、DPO 的任何阶段**：
 >
 > - SFT 阶段：用 LoRA 微调，省显存
 > - PPO 阶段：Actor 用新 LoRA，Critic 用 value_head
+> - DPO 阶段：Policy 用新 LoRA，Reference 冻结
 >
 > **QLoRA 是 LoRA 的显存优化版**：
 >
 > - 只在"base 太大放不下"时使用（7B+）
 > - 小模型（0.5B）用普通 LoRA 即可
 
+### 数据复用
+
+| 阶段 | 可用数据 |
+|---|---|
+| SFT | (prompt, response) |
+| PPO | prompt（自己采样） |
+| DPO | (prompt, chosen, rejected) |
+
+**GSM8K 场景**：
+
+- SFT：题目 + 标准答案
+- PPO：题目（自己生成答案，用规则打分）
+- DPO：题目 + 正确答案 + 错误答案
+
 ### 选择建议
 
 | 场景 | 推荐 |
 |---|---|
-| 入门，显存紧张 | SFT（LoRA） |
+| 入门，显存紧张 | SFT（LoRA）→ DPO |
 | 追求效果，资源充足 | SFT → RM → PPO |
 | 可验证任务（数学、代码） | SFT → PPO + 规则奖励 |
-| 单卡 6GB | SFT（LoRA）+ PPO（共享 backbone） |
+| 单卡 6GB | SFT（LoRA）→ DPO |
+| 想要简单稳定 | SFT → DPO |
+| 想要上限高 | SFT → DPO → PPO |
 
 ### 核心公式对照
 
 | 阶段 | 核心公式 |
 |---|---|
-| SFT | $L = -\sum_t \log \pi_\theta(y_t \mid y_{<t})$ |
+| SFT | $L = -\sum_t \log \pi_\theta(y_t \mid y_{\lt t})$ |
 | LoRA | $y = Wx + \frac{\alpha}{r}BAx$ |
 | QLoRA | 同 LoRA，但 base 是 4-bit |
 | PPO | $L = L^{\text{policy}} + 0.5 L^{\text{value}}$ |
 | PPO 的 KL | $r_t = -\beta(\log\pi_\theta - \log\pi_{\text{ref}})$ |
 | PPO 的 GAE | $A_t = \delta_t + \gamma\lambda A_{t+1}$ |
+| DPO | $L = -\log \sigma(\beta \log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)} - \beta \log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)})$ |
 
 ---
