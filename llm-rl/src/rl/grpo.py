@@ -4,7 +4,7 @@ from copy import deepcopy
 from src.plotter import Plotter
 from src.models import LoraConfig, inject_lora, disabled_lora
 from src.data import RLDataset
-from typing import Callable
+from typing import Callable, List, Tuple
 from tqdm import tqdm
 from src.ckpt import *
 
@@ -150,7 +150,41 @@ class GRPOTrainer(CheckpointableTrainer):
         response_ids = output_ids[:, prompt_len:]                       # (batch_size * n_group, len(response), vocab_size)
         log_probs = log_probs.gather(-1, response_ids.unsqueeze(-1))    # (batch_size * n_group, len(response), vocab_size)
         log_probs = log_probs.squeeze(-1)                               # (batch_size * n_group, len(response))
+
+        # padding 位置置零
+        response_mask = output_attention_mask[:, prompt_len:]
+        log_probs = log_probs * response_mask.float()
+        
         return log_probs, response_ids
+
+    def _padding_group_responses(
+            self, 
+            group_responses: List[torch.Tensor], 
+            group_responses_mask: List[torch.Tensor],
+        ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        # pad 到最大长度
+        max_len = max(r.size(1) for r in group_responses)
+        pad_id = self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
+
+        padded_ids = []
+        padded_masks = []
+        for ids, mask in zip(group_responses, group_responses_mask):
+            pad_len = max_len - ids.size(1)
+            if pad_len > 0:
+                ids = torch.cat([
+                    ids,
+                    torch.full((ids.size(0), pad_len), pad_id,
+                            dtype=ids.dtype, device=ids.device),
+                ], dim=1)
+                mask = torch.cat([
+                    mask,
+                    torch.zeros((mask.size(0), pad_len),
+                                dtype=mask.dtype, device=mask.device),
+                ], dim=1)
+            padded_ids.append(ids)
+            padded_masks.append(mask)
+
+        return padded_ids, padded_masks
 
     @torch.no_grad()
     def _collect_traces(self, input_ids, attention_mask, ground_truth):
@@ -168,6 +202,7 @@ class GRPOTrainer(CheckpointableTrainer):
             group_responses.append(output_ids)
             group_responses_mask.append(output_attention_mask)
         # 拼接为(batch_size, n_group, len(prompt)+len(response))
+        group_responses, group_responses_mask = self._padding_group_responses(group_responses, group_responses_mask)
         output_ids = torch.stack(group_responses, dim=1)
         output_attention_mask = torch.stack(group_responses_mask, dim=1)
 
@@ -197,25 +232,17 @@ class GRPOTrainer(CheckpointableTrainer):
         mean_r = rm_scores.mean(dim=1, keepdim=True)       # (batch_size, 1)
         std_r = rm_scores.std(dim=1, keepdim=True)         # (batch_size, 1)
         advantages = (rm_scores - mean_r) / (std_r + 1e-8) # (batch_size, n_group)
-
-        # 输入参考模型，计算KL惩罚
-        ref_log_probs, _ = GRPOTrainer._calc_log_probs(prompt_len, flat_ids, self._ref_model, flat_mask)
-        kl = actor_log_probs - ref_log_probs        # (batch_size * n_group, len(response))
-        rewards = -self._config.kl_beta * kl
-        rewards[:, -1] += rm_scores.reshape(-1) # 末尾加 RM
-
-        rewards = rewards.reshape(batch_size, self._config.n_sample_group, -1)
-        actor_log_probs = actor_log_probs.reshape(batch_size, self._config.n_sample_group, -1)
+        # 扩展到所有回答维度，变为(batch_size, n_group, len(response))
+        response_len = actor_response_ids.shape[1]
+        advantages = advantages.reshape(batch_size * self._config.n_sample_group, 1).expand(-1, response_len)
         
         return {
             "batch_size":     batch_size,
             "prompt_len":     prompt_len,
-            "response_len":   actor_response_ids.shape[1],
             "input_ids":      output_ids,                  # (batch_size, n_group, len(prompt)+len(response))
             "attention_mask": output_attention_mask,       # (batch_size, n_group, len(prompt)+len(response))
-            "log_probs":      actor_log_probs,             # (batch_size, n_group, len(response))  旧策略每 token log_prob
+            "log_probs":      actor_log_probs,             # (batch_size * n_group, len(response))  旧策略每 token log_prob
             "advantages":     advantages,                  # (batch_size, n_group)
-            "rewards":        rewards,                     # (batch_size, n_group, len(response))
         }
 
     def _clip(self, logp_ratio):
@@ -227,13 +254,11 @@ class GRPOTrainer(CheckpointableTrainer):
             迭代训练一个batch
         """
         batch_size = traceInfoDict["batch_size"]
-        response_len = traceInfoDict["response_len"]
         prompt_len = traceInfoDict["prompt_len"]
         input_ids = traceInfoDict["input_ids"]                 # (batch_size, n_group, len(prompt)+len(response))
         attention_mask = traceInfoDict["attention_mask"]       # (batch_size, n_group, len(prompt)+len(response))
-        old_actor_log_probs = traceInfoDict["log_probs"].reshape(batch_size * self._config.n_sample_group, -1)       # (batch_size, n_group, len(response))
-        advantages = traceInfoDict["advantages"]               # (batch_size, n_group)
-        advantages = advantages.reshape(batch_size * self._config.n_sample_group, 1).expand(-1, response_len)       # 扩展到所有回答维度，变为(batch_size, n_group, len(response))
+        old_actor_log_probs = traceInfoDict["log_probs"]       # (batch_size * n_group, len(response))
+        advantages = traceInfoDict["advantages"]               # (batch_size, n_group, len(response))
 
         # 2. batch迭代
         # 展平为(batch_size * n_group, len(prompt)+len(response))，进行一次前向
@@ -245,8 +270,12 @@ class GRPOTrainer(CheckpointableTrainer):
         ratio = torch.exp(new_actor_log_probs - old_actor_log_probs)
         # 策略损失：让"好动作"的概率变大，让"坏动作"的概率变小
         policy_loss = -torch.min(ratio * advantages,  self._clip(ratio) * advantages).mean()
-        # 总损失 = 策略损失
-        loss = policy_loss
+        # 算 KL
+        with torch.no_grad():
+            ref_log_probs, _ = self._calc_log_probs(prompt_len, flat_ids, self._ref_model, flat_mask)
+        kl = new_actor_log_probs - ref_log_probs    # (batch_size * n_group, len(response))
+        # 总损失 = 策略损失 + beta * kl
+        loss = policy_loss + self._config.kl_beta * kl.mean()
 
         # 梯度更新
         self._optimizer.zero_grad()
@@ -258,7 +287,7 @@ class GRPOTrainer(CheckpointableTrainer):
         return loss.item()
 
     def train(self) -> None:
-        """ppo训练"""
+        """grpo训练"""
         # 从 checkpoint 恢复
         self.maybe_resume()
 

@@ -1356,3 +1356,423 @@ SFT → DPO（暖启动）→ PPO（精调）
 | DPO | $L = -\log \sigma(\beta \log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)} - \beta \log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)})$ |
 
 ---
+
+## 3.6 GRPO（组相对策略优化）
+
+### 学习目标
+
+**用同一 prompt 下多个回答的相对排名代替 Critic，省显存、更稳定。**
+
+形式化目标：
+
+$$
+\max_\pi \mathbb{E}_{x, \{y_i\} \sim \pi}\left[r_{\text{RM}}(x, y_i) - \beta \cdot \text{KL}(\pi \| \pi_{\text{ref}})\right]
+$$
+
+> $x$：prompt
+>
+> $\{y_i\}$：从策略采样的 G 个回答
+>
+> $r_{\text{RM}}$：RM 打分
+>
+> $\pi_{\text{ref}}$：参考模型（SFT）
+>
+> $\beta$：KL 系数
+
+### 核心洞见：不需要 Critic
+
+**PPO 的问题**：Critic 和 Actor 一样大，显存翻倍。
+
+**GRPO 的思路**：
+
+> 对同一个 prompt 采样 G 个回答，用**组内相对分数**作为优势，**不需要 Critic 估计 V(s)**。
+
+### 组内归一化
+
+对同一个 prompt 的 G 个回答：
+
+$$
+\{y_1, y_2, \ldots, y_G\} \sim \pi_\theta(\cdot | x)
+$$
+
+用 RM 打分：
+
+$$
+r_i = r_{\text{RM}}(x, y_i), \quad i = 1, \ldots, G
+$$
+
+**组内归一化得到优势**：
+
+$$
+A_i = \frac{r_i - \text{mean}(r)}{\text{std}(r)}
+$$
+
+> $\text{mean}(r)$：这 G 个回答的平均分。
+>
+> $\text{std}(r)$：标准差。
+>
+> **含义**：回答 $i$ 比“同组平均”好多少，用标准差归一化。
+
+**举例**：
+> prompt = "1+1=?"  
+> 采 4 个回答：  
+> y_1 = "2" → r_1 = 1.0  
+> y_2 = "3" → r_2 = -1.0  
+> y_3 = "2" → r_3 = 1.0  
+> y_4 = "4" → r_4 = -1.0  
+
+> mean = 0, std = 1  
+> A_1 = 1.0 ← 好回答，正优势  
+> A_2 = -1.0 ← 坏回答，负优势  
+
+
+**直觉**：
+
+- 好回答：$A > 0$ → 提高概率
+- 坏回答：$A < 0$ → 降低概率
+- **不需要 Critic 估 V(s)，平均分天然是基线**
+
+### 策略损失（和 PPO 一样）
+
+$$
+L^{\text{policy}} = -\mathbb{E}\left[\min\left(r_t A_t, \text{clip}(r_t, 1\pm\epsilon) A_t\right)\right]
+$$
+
+> $r_t = \dfrac{\pi_\theta(a_t|s_t)}{\pi_{old}(a_t|s_t)}$：概率比。
+>
+> $A_t$：**组内归一化后的优势**（PPO 是 GAE 算的）。
+>
+> $\epsilon$：clip 范围，通常 0.2。
+>
+> **形式和 PPO 完全一样**，只是优势的来源不同。
+
+### 总损失
+
+$$
+L = L^{\text{policy}} + \beta \cdot \text{KL}(\pi_\theta \| \pi_{\text{ref}})
+$$
+
+> **没有 value loss**（因为没 Critic）。
+>
+> KL 惩罚可以加进损失，也可以只用于监控。
+
+### 和 PPO 的对比
+
+| 维度 | PPO | GRPO |
+|---|---|---|
+| Critic | ✅ 需要 | ❌ **不需要** |
+| 优势估计 | GAE（需 V(s)） | **组内归一化** |
+| 每个 prompt 采样 | 1 个回答 | **G 个回答** |
+| 模型数 | 4 | **3** |
+| 显存 | 高 | **省 1 个 Critic** |
+| 策略损失 | clip | **完全一样** |
+| KL 惩罚 | ✅ | ✅ 一样 |
+| On-policy | ✅ | ✅ 一样 |
+| 训练速度 | 慢 | 快 |
+| 稳定性 | 需调参 | 更稳 |
+| 代表 | InstructGPT | DeepSeek-R1 |
+
+**关键区别**：**GRPO 去掉了 Critic，用组内相对分数代替 GAE。**
+
+### 和传统 RL 的对应
+
+> **Critic 被“组内平均分”替代**：
+>
+> $$
+> V(s) \approx \text{mean}(r_1, \ldots, r_G)
+> $$
+>
+> 组内平均分就是“这个 prompt 的平均表现”，作为基线。优势就是“比平均好多少”。
+>
+> **这是 GRPO 的核心思想**：**用蒙特卡洛采样估计基线，不训练 Critic。**
+
+### 优势粒度的区别
+
+**PPO**：
+
+- 优势是 **token 级**：每个 token 位置一个 $A_t$（GAE 算）
+- 形状 `(B, R)`
+
+**GRPO**：
+
+- 优势是 **回答级**：每个 response 一个 $A_i$
+- 形状 `(B, G)`
+- **广播到所有 token**：同一 response 的所有 token 共享这个优势
+
+$$
+A_{b,g,t} = A_{b,g}, \quad \forall t
+$$
+
+**含义**：这个 response 好，它里面所有 token 都值得鼓励；坏，所有 token 都值得抑制。
+
+### 算法流程
+```
+1. 对每个 prompt：
+a. 用 Actor 采样 G 个回答
+b. 用 RM 给每个回答打分 → (B, G)
+c. 组内归一化得到优势：A_i = (r_i - mean(r)) / std(r)
+
+2. 算 KL 惩罚（可选）：
+对每个回答的每个 token：KL_t = log π_actor - log π_ref
+
+3. 策略更新：
+
+展平 (B, G, P+R) → (B*G, P+R)
+
+重新前向算 new_logp（带梯度）
+
+优势广播到每 token：A (BG,) → (BG, R)
+
+算 ratio = exp(new - old)
+
+clip 损失
+
+反向传播
+
+4. 清空数据，回到第 1 步
+```
+
+### 关键实现：`_collect_traces`
+
+```python
+@torch.no_grad()
+def _collect_traces(self, input_ids, attention_mask, ground_truth):
+    B = input_ids.size(0)
+    G = self._config.n_sample_group
+    P = input_ids.size(1)
+
+    # 1. 采样 G 个回答
+    group_responses = []
+    group_responses_mask = []
+    for _ in range(G):
+        output_ids, output_mask = self._actor_generate_full_replay(
+            input_ids, attention_mask,
+        )
+        group_responses.append(output_ids)
+        group_responses_mask.append(output_mask)
+
+    # 2. pad 到最大长度
+    max_len = max(r.size(1) for r in group_responses)
+    pad_id = self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
+    padded_ids, padded_masks = [], []
+    for ids, mask in zip(group_responses, group_responses_mask):
+        pad_len = max_len - ids.size(1)
+        if pad_len > 0:
+            ids = torch.cat([
+                ids,
+                torch.full((ids.size(0), pad_len), pad_id,
+                           dtype=ids.dtype, device=ids.device),
+            ], dim=1)
+            mask = torch.cat([
+                mask,
+                torch.zeros((mask.size(0), pad_len),
+                            dtype=mask.dtype, device=mask.device),
+            ], dim=1)
+        padded_ids.append(ids)
+        padded_masks.append(mask)
+
+    output_ids = torch.stack(padded_ids, dim=1)              # (B, G, L)
+    output_attention_mask = torch.stack(padded_masks, dim=1) # (B, G, L)
+    R = output_ids.size(-1) - P
+
+    # 3. 展平前向
+    flat_ids = output_ids.reshape(B * G, -1)
+    flat_mask = output_attention_mask.reshape(B * G, -1)
+    actor_logp, response_ids = _calc_log_probs(P, flat_ids, self._actor, flat_mask)
+    # actor_logp: (B*G, R)
+
+    # 4. RM 打分
+    group_response_ids = response_ids.reshape(B, G, -1)
+    rm_scores_list = []
+    for n in range(G):
+        responses = tokenizer.batch_decode(
+            group_response_ids[:, n, :], skip_special_tokens=True,
+        )
+        rm_scores = torch.tensor([
+            reward_fn(r, gt) for r, gt in zip(responses, ground_truth)
+        ], dtype=torch.float32, device=device)
+        rm_scores_list.append(rm_scores)
+    rm_scores = torch.stack(rm_scores_list, dim=1)           # (B, G)
+
+    # 5. 组内归一化
+    mean_r = rm_scores.mean(dim=1, keepdim=True)             # (B, 1)
+    std_r = rm_scores.std(dim=1, keepdim=True)               # (B, 1)
+    advantages = (rm_scores - mean_r) / (std_r + 1e-8)       # (B, G)
+
+    # 6. 广播到每 token
+    advantages = advantages.reshape(B * G, 1).expand(-1, R)  # (B*G, R)
+
+    return {
+        "input_ids":      output_ids,                # (B, G, P+R)
+        "attention_mask": output_attention_mask,
+        "prompt_len":     P,
+        "response_len":   R,
+        "log_probs":      actor_logp,                # (B*G, R)
+        "advantages":     advantages,                # (B*G, R)
+    }
+```
+关键点：
+
+- 循环 G 次采样，pad 到最大长度再 torch.stack
+
+- 展平成 (B*G, ...) 前向一次，比循环前向快
+
+- 组内归一化用 dim=1，对 G 维操作
+
+- 优势广播到每 token：(B*G, 1) → (B*G, R)
+
+### 关键实现：_update_batch
+```python
+def _update_batch(self, traces):
+    B = traces["batch_size"]
+    G = self._config.n_sample_group
+    R = traces["response_len"]
+    P = traces["prompt_len"]
+
+    input_ids = traces["input_ids"]                  # (B, G, P+R)
+    attention_mask = traces["attention_mask"]
+    old_logp = traces["log_probs"]                   # (B*G, R)
+    advantages = traces["advantages"]                # (B*G, R)
+
+    # 展平前向
+    flat_ids = input_ids.reshape(B * G, -1)
+    flat_mask = attention_mask.reshape(B * G, -1)
+
+    # 新策略前向（带梯度）
+    new_logp, _ = _calc_log_probs(P, flat_ids, self._actor, flat_mask)
+    # (B*G, R)
+
+    # Reference 前向（no_grad）
+    with torch.no_grad():
+        ref_logp, _ = _calc_log_probs(P, flat_ids, self._ref_model, flat_mask)
+    # (B*G, R)
+
+    # KL（带梯度，因为 new_logp 有梯度）
+    kl = new_logp - ref_logp                         # (B*G, R)
+
+    # 概率比
+    ratio = torch.exp(new_logp - old_logp)           # (B*G, R)
+
+    # clip 损失
+    surr1 = ratio * advantages
+    surr2 = self._clip(ratio) * advantages
+    policy_loss = -torch.min(surr1, surr2).mean()
+
+    # 总损失 = 策略损失 + β·KL
+    loss = policy_loss + self._config.kl_beta * kl.mean()
+
+    # 更新
+    self._optimizer.zero_grad()
+    loss.backward()
+    clip_grad_norm_(self._trainable_parameters, self._config.grad_clip_eps)
+    self._optimizer.step()
+
+    return loss.item()
+```
+关键点：
+
+- old_logp 保持 (B*G, R) 形状，不要丢 R 维
+
+- 优势广播到每 token，已经是 (B*G, R)
+
+- KL 必须在带梯度环境下重算（不能用采样时的 KL）
+
+- 没有 value_loss
+### GRPO 与 PPO 对比
+
+| 步骤 | PPO | GRPO |
+|---|---|---|
+| 采样 | 1 个/prompt | G 个/prompt |
+| 展平 | `(B, P+R)` | `(B*G, P+R)` |
+| Critic 前向 | ✅ | ❌ |
+| 优势 | GAE `(B, R)` | 组内归一化 `(B, G)` |
+| 优势广播 | 不需要（已 token 级） | 需要 broadcast 到 `(B*G, R)` |
+| 损失 | `policy_loss + 0.5 * value_loss` | `policy_loss + β * KL` |
+| Checkpoint | Actor + Critic | 只 Actor |
+
+### 适用场景
+
+| 场景 | 推荐 |
+|---|---|
+| 可验证任务（数学、代码） | GRPO + 规则奖励 |
+| 通用对话对齐 | PPO 或 DPO |
+| 显存紧张 | GRPO |
+| 追求极致效果 | PPO |
+| 单卡 6GB | GRPO |
+
+GRPO 最适合：
+
+- 可验证奖励：规则打分（数学、代码）
+- 显存有限：省掉 Critic
+- 需要在线采样：比 DPO 探索能力强
+
+DeepSeek-R1 就是用 GRPO + 规则奖励，训练出了强大的推理能力。
+
+### 为什么 GRPO 有效
+
+### 1. 组内归一化是一个好的基线
+
+优势的定义：
+
+$$
+A(s,a)=Q(s,a)-V(s)
+$$
+
+PPO：用 Critic 估计 $V(s)$。
+
+GRPO：用同组回答的平均分作为基线：
+
+$$
+A_i = r_i - \mathrm{mean}(r)
+$$
+
+为什么有效：
+
+- 同一 prompt 的多个回答，难度相同
+- 平均分是一个天然的基线
+- 不需要 Critic 学 $V(s)$
+
+### 2. 去掉了 Critic 的误差
+
+Critic 的问题：
+
+- 需要单独训练
+- 估计有误差
+- 显存翻倍
+- 训练不稳定
+
+GRPO 没有 Critic，直接比较同组回答，更稳定、更省显存。
+
+### 3. 适合可验证任务
+
+GSM8K、代码、数学：答案对错明确，RM 可以很简单（规则），组内归一化非常有效。
+
+### 一句话总结
+
+GRPO = PPO − Critic + 组内归一化。
+
+核心公式：
+
+$$
+A_i = \frac{r_i - \mathrm{mean}(r)}{\mathrm{std}(r)}
+$$
+
+和 PPO 的区别：
+
+| 维度 | PPO | GRPO |
+|---|---|---|
+| Critic | ✅ | ❌ |
+| 优势 | GAE（需 $V(s)$） | 组内归一化 |
+| 采样 | 1 个/prompt | G 个/prompt |
+| 模型数 | 4 | 3 |
+| 显存 | 高 | 省 1 个 Critic |
+| 策略损失 | clip | 一样 |
+| KL 惩罚 | ✅ | 一样 |
+
+关键：
+
+- 策略损失、KL 惩罚、clip 都和 PPO 完全一样
+- 唯一区别是优势的计算方式
+- 去掉 Critic，用同组回答的相对排名代替
+
+GRPO 是显存有限时的最佳选择，尤其适合可验证任务（数学、代码）。
