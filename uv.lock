@@ -53,18 +53,36 @@ name = "agentic-rl"
 version = "0.1.0"
 source = { virtual = "agentic-rl" }
 dependencies = [
+    { name = "accelerate" },
+    { name = "bitsandbytes" },
+    { name = "datasets" },
     { name = "ddgs" },
-    { name = "llm-rl" },
+    { name = "huggingface-hub" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "peft" },
+    { name = "pyarrow" },
     { name = "torch" },
     { name = "torchvision" },
+    { name = "tqdm" },
+    { name = "transformers" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "accelerate", specifier = ">=1.15.0" },
+    { name = "bitsandbytes", specifier = ">=0.50.2" },
+    { name = "datasets", specifier = ">=5.0.1" },
     { name = "ddgs", specifier = ">=9.16.0" },
-    { name = "llm-rl", editable = "llm-rl" },
+    { name = "huggingface-hub", specifier = ">=1.33.0" },
+    { name = "matplotlib", specifier = ">=3.11.2" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "peft", specifier = ">=0.21.2" },
+    { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "torch", specifier = ">=2.14.1" },
     { name = "torchvision", specifier = ">=0.29.1" },
+    { name = "tqdm", specifier = ">=4.70.1" },
+    { name = "transformers", specifier = ">=5.18.0" },
 ]
 
 [[package]]

@@ -11,11 +11,17 @@ dependencies = [
     "ddgs>=9.16.0",
     "torch>=2.14.1",
     "torchvision>=0.29.1",
-    "llm-rl",
+    "accelerate>=1.15.0",
+    "datasets>=5.0.1",
+    "transformers>=5.18.0",
+    "peft>=0.21.2",
+    "bitsandbytes>=0.50.2",
+    "huggingface-hub>=1.33.0",
+    "pyarrow>=25.0.1",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "tqdm>=4.70.1",
 ]
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu130"
-
-[tool.uv.sources]
-llm-rl = { workspace = true }

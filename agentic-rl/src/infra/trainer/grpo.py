@@ -1,42 +1,35 @@
 import math
+import os
 from dataclasses import dataclass
 import torch
 import numpy as np
 from copy import deepcopy
-from llm_rl.plotter import Plotter
-from llm_rl.models import LoraConfig, inject_lora
-from typing import List, Tuple, Optional
+from typing import List, Optional
 from tqdm import tqdm
-from llm_rl.ckpt import *
 
-from src.search_r1.dataset import NqAndHotpotqaSample, NqAndHotpotqaDataset
-from src.search_r1.environment import Environment
-from src.search_r1.reward import SearchR1Reward
+from src.infra.plotter import Plotter
+
+from src.infra.models.lora import LoraConfig, inject_lora
+from src.infra.trainer.ckpt import *
+from src.infra.dataset.dataset import BaseSample, BaseDataset
+from src.infra.rollout.backends import *
+from src.infra.rollout.engine import Trajectory, RolloutEngine
+from src.infra.environment.env import Environment
+from src.infra.reward.reward import RewardFn
 
 
 @dataclass
 class GRPOConfig:
-    dataset: NqAndHotpotqaDataset
     ckpt_config: CkptConfig
-    max_new_tokens: int
-    temperature: float
-    top_p: float
     learning_rate: float
     actor_lora_config: LoraConfig
     kl_beta: float  # KL惩罚系数
     n_sample_group: int # 组内归一化时，一组采样多少个回答
     n_epoch: int # 策略模型训练轮次
+    inference_backend_config: InferenceBackendConfig    # 采样引擎推理配置
     device: str
     ratio_clip_eps: float = 0.2 # 新旧logp裁剪
     grad_clip_eps: float = 1.0  # 梯度裁剪
-
-@dataclass
-class Trajectory:
-    """单个轨迹"""
-    input_ids: torch.LongTensor     # 输入的完整query，包含刚开始的prompt，以及中间动作的观察
-    old_log_probs: torch.Tensor     # 轨迹的完整输出对数概率，(1, L-1)，和 loss_mask 对齐；非模型位置的值无意义，靠 mask 屏蔽
-    loss_mask: torch.LongTensor     # 损失的掩码，为1的位置参与损失计算，0的位置不参与
-    reward: float                   # 该轨迹对应的奖励值
 
 class TrajectoryGroup:
     "一个组，包含多条轨迹"
@@ -69,7 +62,8 @@ class TrajectoryGroup:
         return self._trajectories
 
     @property
-    def advantages(self) -> Optional[torch.Tensor]:
+    def advantages(self) -> torch.Tensor:
+        assert self._advantages is not None
         return self._advantages
 
 class Actor(torch.nn.Module):
@@ -144,13 +138,14 @@ class GRPOTrainer(CheckpointableTrainer):
         状态空间：LLM为当前已生成的Token
         动作空间：在LLM里，动作为生成下一个token，因此为词表大小
     """
-    def __init__(self, base_model, tokenizer, env: Environment, config: GRPOConfig):
-        self._plotter = Plotter()
+    def __init__(self, base_model, tokenizer, dataset: BaseDataset, env: Environment,
+                    reward_fn: RewardFn, config: GRPOConfig):
+        self._plotter = Plotter(storage_path=os.path.join(config.ckpt_config.ckpt_dir, "metrics.jsonl"))
         ckpt_manager = CheckpointManager(config=config.ckpt_config)
         super().__init__(ckpt_manager, self._plotter)
 
-        self._env = env
         self._config = config
+        self._dataset = dataset
         self._tokenizer = tokenizer
 
         self._actor = Actor(
@@ -170,34 +165,33 @@ class GRPOTrainer(CheckpointableTrainer):
             lr=config.learning_rate,
         )
 
-    def _actor_generate_full_reply(self, input_ids: torch.LongTensor, attention_mask: torch.LongTensor) -> Tuple[str, torch.Tensor, torch.Tensor]:
-        """actor生成一次完整回答，返回：生成的文本、output_ids、output_attention_mask"""
-        # 1. 生成完整序列
-        output_ids = self._actor.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=self._config.max_new_tokens,
-            do_sample=True,
-            temperature=self._config.temperature,
-            top_p=self._config.top_p,
-            pad_token_id=self._tokenizer.pad_token_id,
-            eos_token_id=self._tokenizer.eos_token_id,
-        )   # (batch_size, len(prompt + response))
+        # 构建采样引擎
+        self._rollout_engine = self._build_rollout_engine(env=env, reward_fn=reward_fn)
+        # 首次同步初始权重
+        self._rollout_engine.sync_weights(self._actor.state_dict())
 
-        # 2. 构造 output_attention_mask（遇到第一个 eos 后置 0）
-        output_attention_mask = torch.ones_like(output_ids)
-        for i in range(output_ids.size(0)):
-            eos_pos = (output_ids[i] == self._tokenizer.eos_token_id).nonzero()
-            if len(eos_pos) > 0:
-                first_eos = eos_pos[0].item()
-                output_attention_mask[i, first_eos+1:] = 0
+    def _build_rollout_engine(self, env: Environment, reward_fn: RewardFn) -> RolloutEngine:
+        """
+        构建采样引擎：根据配置 + 训练侧资源，构造 Backend。
+        """
+        cfg = self._config.inference_backend_config
+        if isinstance(cfg.backend, HFBackendConfig):
+            # HF 后端：从 Actor 拿模型对象
+            rollout_inference_backend = HFBackend(
+                model=self._actor,
+                tokenizer=self._tokenizer,
+                params=cfg.params,
+            )
+        else:
+            raise RuntimeError(f"Unsupported backend: {type(cfg.backend)}")
 
-        # 3. 解码新生成的文本
-        prompt_len = input_ids.shape[1]
-        generated_ids = output_ids[0, prompt_len:]          # 只取新生成的 token
-        generated_text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
-
-        return generated_text, output_ids, output_attention_mask
+        return RolloutEngine(
+            tokenizer=self._tokenizer, 
+            env=env, 
+            reward_fn=reward_fn, 
+            inference_backend=rollout_inference_backend, 
+            device=self._config.device,
+        )
 
     @classmethod
     def _calc_log_probs(cls, model, input_ids, attn_mask):
@@ -211,68 +205,8 @@ class GRPOTrainer(CheckpointableTrainer):
         
         return token_logp, target_ids
 
-    def _generate_one_full_trajectory(self, prompt: str, golden_answers: List[str]) -> Trajectory:
-        """生成一条完整轨迹（prompt -> reply -> action -> observation -> action -> ... -> final_answer)"""        
-        # 1. 重置环境
-        self._env.reset()
-
-        # 2. 循环生成决策，直到结束（输出最终回答 或 非法命令）
-        # 第一轮：走 chat template
-        prompt_text = self._tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        prompt_ids = torch.tensor([self._tokenizer.encode(prompt_text, add_special_tokens=False)], dtype=torch.long, device=self._config.device)
-
-        done = False
-        delta_input_text = ""                            # 增量输入的文本，向量化后拼在full_ids后面输入，自然带上了之前的历史
-        full_ids = prompt_ids                            # [prompt | gen1 | info1 | gen2 | info2 | gen3]
-        loss_mask = torch.zeros_like(input=prompt_ids)   # 遮住所有非模型生成的位置，这些位置不参与后续前向与loss计算
-
-        while not done:
-            # 1. 编码增量文本，拼接到full_ids上
-            if delta_input_text != "":
-                # 编码
-                delta_input_ids = self._tokenizer.encode(delta_input_text, add_special_tokens=False)
-                delta_input_ids = torch.tensor([delta_input_ids], dtype=torch.long, device=self._actor.device)
-                # 拼接
-                full_ids = torch.cat([full_ids, delta_input_ids], dim=1)
-                loss_mask = torch.cat([loss_mask, torch.zeros(size=delta_input_ids.size(), dtype=loss_mask.dtype, device=loss_mask.device)], dim=1)
-
-            # 2. 生成一次回答，获取决策命令；full_ids无padding，故attn mask全1
-            command, output_ids, _ = self._actor_generate_full_reply(input_ids=full_ids, attention_mask=torch.ones_like(full_ids))
-            
-            # 拼接
-            prompt_len = full_ids.shape[1]
-            generated_ids = output_ids[:, prompt_len:]  # output_ids包含此时的full_ids+真正生成的tokens，需要切一下
-            full_ids = torch.cat([full_ids, generated_ids], dim=1)
-            loss_mask = torch.cat([loss_mask, torch.ones(size=generated_ids.size(), dtype=loss_mask.dtype, device=loss_mask.device)], dim=1)
-
-            # 3. 触发环境进行一次行动，获取行动观察结果、结束标志
-            obs, done = self._env.action(cmd=command)
-            delta_input_text = obs
-
-        # 3. actor前向一次，获取轨迹的输出完整对数概率
-        with torch.no_grad():
-            actor_log_probs, _ = GRPOTrainer._calc_log_probs(
-                model=self._actor, 
-                input_ids=full_ids, 
-                attn_mask=torch.ones_like(full_ids),
-            )   # full_ids无padding，故attn mask全1
-
-        # 4. 根据金标准，计算单轨迹奖励
-        reward = SearchR1Reward.calc(final_answer=self._env.get_final_answer(), golden_answers=golden_answers)
-
-        return Trajectory(
-            input_ids=full_ids,             # (1, L)
-            old_log_probs=actor_log_probs,  # (1, L-1)，对应 input_ids[:, 1:]
-            loss_mask=loss_mask[:, 1:],     # (1, L-1)，与old_log_probs对齐
-            reward=reward,
-        )
-
     @torch.no_grad()
-    def _rollout(self, sample: NqAndHotpotqaSample) -> TrajectoryGroup:
+    def _rollout(self, sample: BaseSample) -> TrajectoryGroup:
         """
             单batch采样数据轨迹
         """
@@ -281,7 +215,7 @@ class GRPOTrainer(CheckpointableTrainer):
         # 生成一组轨迹
         for _ in range(self._config.n_sample_group):
             # actor完整生成一次轨迹
-            trajectory = self._generate_one_full_trajectory(prompt=sample.question, golden_answers=sample.golden_answers)
+            trajectory = self._rollout_engine.rollout(sample=sample)
             group_trajectories.append_trajectory(trajectory)
 
         # 组内归一化估计优势
@@ -322,6 +256,12 @@ class GRPOTrainer(CheckpointableTrainer):
             # adv无需padding，直接stack
             batch_adv = torch.cat((batch_adv, group.advantages), dim=0) if batch_adv is not None else group.advantages
 
+        assert batch_input_ids is not None
+        assert batch_attn_mask is not None
+        assert batch_loss_mask is not None
+        assert batch_old_logp is not None
+        assert batch_adv is not None
+
         # 2. 一次策略网络前向传播，获取新动作、新动作对应的新概率分布
         new_log_probs, _ = GRPOTrainer._calc_log_probs(
             model=self._actor, 
@@ -359,12 +299,12 @@ class GRPOTrainer(CheckpointableTrainer):
 
         return total_loss / max(total_tokens, 1)
 
-    def train(self) -> None:
+    def train(self, save=None, show=True) -> None:
         """grpo训练"""
         # 从 checkpoint 恢复
         self.maybe_resume()
 
-        train_data_loader = self._config.dataset.train_data_loader()
+        train_data_loader = self._dataset.train_data_loader()
         for ep in range(self._epoch, self._config.n_epoch):
             self.set_epoch(ep)
             step_cnt, total_loss = 0, 0.0
@@ -390,31 +330,36 @@ class GRPOTrainer(CheckpointableTrainer):
                 torch.nn.utils.clip_grad_norm_(self._trainable_parameters, self._config.grad_clip_eps)  # 梯度裁剪
                 self._optimizer.step()
 
-                # 4. 定期保存 checkpoint
+                # 4. 权重同步到推理后端
+                self._rollout_engine.sync_weights(self._actor.state_dict())
+
+                # 5. 定期保存 checkpoint
                 self.maybe_save()
 
             tqdm.write(f"""epoch: {ep}, loss={total_loss/step_cnt}""")
             self._plotter.log(name="train_loss", value=total_loss/step_cnt, step=ep)
-        self._plotter.plot(names=['train_loss'])
+        self._plotter.plot(names=['train_loss'], save=save, show=show)
 
     @torch.no_grad()
-    def eval(self) -> None:
-        """
-        测试集上评估
-        """
+    def eval(self, save=None, show=True) -> None:
+        """测试集上评估：逐样本 rollout 一次，用 reward（EM）统计准确率"""
         self._actor.eval()
 
-        test_data_loader = self._config.dataset.test_data_loader()
+        test_data_loader = self._dataset.test_data_loader()
+        rewards: list[float] = []
 
         for batch in tqdm(test_data_loader, desc="Evaluating"):
             for sample in batch:
-                # 采样轨迹 + 组内归一化
-                group = self._rollout(sample)
+                # 每个样本采样 1 条轨迹，traj.reward 已是 SearchR1Reward 打的 0/1 分
+                traj = self._rollout_engine.rollout(sample)
+                rewards.append(traj.reward)
 
-                self._plotter.log("eval_advantage", group.advantages.mean().item())
-
+        acc = float(np.mean(rewards)) if rewards else 0.0
+        self._plotter.log("eval_acc", acc, step=self.global_step)
         self._actor.train()
-        self._plotter.plot(names=["eval_advantage"])
+        self._plotter.plot(names=["eval_acc"], save=save, show=show)
+        tqdm.write(f"eval acc (EM) = {acc:.4f}")
+
 
     def actor(self):
         """返回训练好的 Actor"""
@@ -438,93 +383,3 @@ class GRPOTrainer(CheckpointableTrainer):
         self._optimizer.load_state_dict(state["optimizer"])
         if "rng" in state:
             set_rng_state(state["rng"])
-
-
-if __name__ == "__main__":
-    from llm_rl.models import Qwen2_5, LoraConfig
-    from llm_rl.ckpt import CkptConfig
-
-    from src.search_r1.dataset import NqAndHotpotqaDataset
-    from src.search_r1.search_tool import DuckDuckGoSearchTool
-    from src.search_r1.environment import WebSearchEnvironment
-
-    # ============================================================
-    # 1. 加载模型
-    # ============================================================
-    qwen2_5 = Qwen2_5()
-    tokenizer = qwen2_5.tokenizer()
-    base_model = qwen2_5.model()
-    print(f"模型已加载, 设备: {qwen2_5.device}")
-
-    # ============================================================
-    # 2. Search-R1环境
-    # ============================================================
-    env = WebSearchEnvironment(max_turns=8, search_tool=DuckDuckGoSearchTool(top_k=2))
-
-    # ============================================================
-    # 3. Search-R1数据集
-    # ============================================================
-    dataset = NqAndHotpotqaDataset()
-
-    # ============================================================
-    # 4. GRPO 训练器
-    # ============================================================
-    grpo_trainer = GRPOTrainer(
-        base_model=base_model,
-        tokenizer=tokenizer,
-        env=env,
-        config=GRPOConfig(
-            dataset=dataset,
-
-            ckpt_config=CkptConfig(
-                ckpt_dir="outputs/search-r1/ckpt",
-                save_steps=5,
-                keep_last=3,
-            ),
-
-            # 采样
-            max_new_tokens=256,
-            temperature=1.0,
-            top_p=1.0,
-            n_sample_group=4,
-
-            # 训练
-            n_epoch=1,
-            learning_rate=1e-6,
-            kl_beta=0,
-            ratio_clip_eps=0.2,
-            grad_clip_eps=1.0,
-
-            # LoRA
-            actor_lora_config=LoraConfig(
-                alpha=16,
-                rank=8,
-                dropout=0.05,
-                use_qlora=True,
-                target_modules=("q_proj", "k_proj", "v_proj", "o_proj"),
-            ),
-
-            device="cuda",
-        ),
-    )
-
-    # ============================================================
-    # 5. 训练
-    # ============================================================
-    grpo_trainer.train()
-
-    # ============================================================
-    # 6. 评估
-    # ============================================================
-    grpo_trainer.eval()
-
-    # ============================================================
-    # 7. 保存 Actor
-    # ============================================================
-    actor = grpo_trainer.actor()
-    qwen_grpo = Qwen2_5.from_model(
-        model=actor.model(),
-        lora_config=actor.lora_config(),
-        tokenizer=tokenizer,
-    )
-    qwen_grpo.save(save_dir="./outputs/search-r1/grpo-qwen2_5-0_5B")

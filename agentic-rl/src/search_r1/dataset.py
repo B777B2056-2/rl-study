@@ -1,10 +1,17 @@
-import torch
-import pyarrow.parquet as pq
-from huggingface_hub import snapshot_download
-from datasets import Dataset
-from typing import List
-from dataclasses import dataclass
+"""
+Search-R1 数据集实现（NQ + HotpotQA）。
+"""
 import os
+from dataclasses import dataclass
+from typing import List
+
+import pyarrow.parquet as pq
+import torch
+from datasets import Dataset
+from huggingface_hub import snapshot_download
+
+from src.infra.dataset.dataset import BaseDataset, BaseSample
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 
@@ -13,73 +20,69 @@ class Message:
     role: str
     content: str
 
+
 @dataclass(frozen=True)
-class NqAndHotpotqaSample:
-    id: str
-    question: str
+class NqAndHotpotqaSample(BaseSample):
+    """
+    NQ + HotpotQA 样本。
+
+    继承 BaseSample 的 id / prompt，额外携带：
+        - golden_answers: 评估用标准答案
+        - data_source:   数据集来源（"nq" / "hotpotqa"）
+        - messages:      保留 role 结构，方便走 chat template
+    """
     golden_answers: tuple[str, ...]
     data_source: str
     messages: tuple[Message, ...]
 
     @classmethod
     def from_row(cls, row: dict) -> "NqAndHotpotqaSample":
+        messages = tuple(
+            Message(role=m["role"], content=m["content"])
+            for m in row["prompt"]
+        )
+
+        # prompt 取最后一条 user message 的 content
+        prompt = ""
+        for msg in reversed(messages):
+            if msg.role == "user":
+                prompt = msg.content
+                break
+
         return cls(
             id=row["id"],
-            question=row["question"],
+            prompt=prompt,
             golden_answers=tuple(row["golden_answers"]),
             data_source=row["data_source"],
-            messages=tuple(
-                Message(role=m["role"], content=m["content"])
-                for m in row["prompt"]
-            ),
+            messages=messages,
         )
 
 
-class NqAndHotpotqaDataset(object):
+class NqAndHotpotqaDataset(BaseDataset):
+    """NQ + HotpotQA 数据集。"""
+
+    REPO_ID = "PeterJinGo/nq_hotpotqa_train"
+
     def __init__(self, batch_size: int = 4, num_workers: int = 0):
+        super().__init__(batch_size, num_workers)
+
         data_dir = snapshot_download(
-            repo_id="PeterJinGo/nq_hotpotqa_train",
+            repo_id=self.REPO_ID,
             repo_type="dataset",
             allow_patterns=["*.parquet"],
         )
+        raw_train = Dataset(pq.read_table(f"{data_dir}/train.parquet"))
+        raw_test = Dataset(pq.read_table(f"{data_dir}/test.parquet"))
 
-        train_table = pq.read_table(f"{data_dir}/train.parquet")
-        test_table = pq.read_table(f"{data_dir}/test.parquet")
-        raw_train_dataset = Dataset(train_table)
-        raw_test_dataset = Dataset(test_table)
-
-        self._train_data_loader: torch.utils.data.DataLoader[list[NqAndHotpotqaSample]] = self._build_data_loader(
-            dataset=raw_train_dataset, 
-            batch_size=batch_size,
-            num_workers=num_workers,
-            shuffle=True,
+        self._train_data_loader = self._build_data_loader(
+            raw_train, shuffle=True, collate_fn=self._collate_fn
         )
-        self._test_data_loader: torch.utils.data.DataLoader[list[NqAndHotpotqaSample]] = self._build_data_loader(
-            dataset=raw_test_dataset, 
-            batch_size=batch_size,
-            num_workers=num_workers,
-            shuffle=False,
-        )
-
-    def _build_data_loader(
-            self, 
-            dataset: Dataset,
-            batch_size: int,
-            num_workers: int,
-            shuffle: bool,
-        ) -> torch.utils.data.DataLoader[list[NqAndHotpotqaSample]]:
-        return torch.utils.data.DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            collate_fn=self._collate_fn,
-            pin_memory=True,
-            drop_last=False,
+        self._test_data_loader = self._build_data_loader(
+            raw_test, shuffle=False, collate_fn=self._collate_fn
         )
 
     @staticmethod
-    def _collate_fn(batch: List[dict]) -> List[dict]:
+    def _collate_fn(batch: List[dict]) -> List[NqAndHotpotqaSample]:
         return [NqAndHotpotqaSample.from_row(row) for row in batch]
 
     def train_data_loader(self) -> torch.utils.data.DataLoader:
@@ -87,10 +90,3 @@ class NqAndHotpotqaDataset(object):
 
     def test_data_loader(self) -> torch.utils.data.DataLoader:
         return self._test_data_loader
-
-if __name__ == "__main__":
-    dataset = NqAndHotpotqaDataset()
-    train_dataloader = dataset.train_data_loader()
-    for batch in train_dataloader:
-        print(batch)
-        break
