@@ -35,9 +35,24 @@ class Qwen2_5(object):
 
     def _init_model(self):
         if self._lora_config is None:
-            self._model = AutoModelForCausalLM.from_pretrained(
-                self._model_name, torch_dtype=torch.bfloat16,
-            ).to(self._device)
+            try:
+                # 优先尝试仅从本地缓存加载
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name, 
+                    torch_dtype=torch.bfloat16, 
+                    local_files_only=True, 
+                    device_map=self._device,
+                )
+                print("模型已从本地缓存加载")
+            except OSError:
+                # 本地缓存不存在时，再回退到在线下载
+                print("本地未找到缓存，正在从远程下载...")
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name, 
+                    torch_dtype=torch.bfloat16, 
+                    device_map=self._device,
+                )
+            self._model = model
             return
 
         model = self._load_base(self._lora_config.use_qlora)
@@ -59,11 +74,24 @@ class Qwen2_5(object):
                 bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_use_double_quant=True,
             )
-            model = AutoModelForCausalLM.from_pretrained(
-                self._model_name,
-                quantization_config=bnb_config,
-                device_map=self._device,
-            )
+            
+            try:
+                # 优先尝试仅从本地缓存加载
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name, 
+                    local_files_only=True,
+                    quantization_config=bnb_config,
+                    device_map=self._device,
+                )
+                print("模型已从本地缓存加载")
+            except OSError:
+                # 本地缓存不存在时，再回退到在线下载
+                print("本地未找到缓存，正在从远程下载...")
+                model = AutoModelForCausalLM.from_pretrained(
+                    self._model_name,
+                    quantization_config=bnb_config,
+                    device_map=self._device,
+                )
             model = prepare_model_for_kbit_training(model)
             return model
         else:

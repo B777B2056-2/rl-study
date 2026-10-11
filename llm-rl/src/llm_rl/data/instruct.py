@@ -1,5 +1,5 @@
 import torch
-from src.data.adapters import BaseDatasetAdapter
+from llm_rl.data.adapters import BaseDatasetAdapter
 
 
 class InstructDataset(object):

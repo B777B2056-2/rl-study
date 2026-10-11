@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from src.data import InstructDataset
-from src.plotter import Plotter
+from llm_rl.data import InstructDataset
+from llm_rl.plotter import Plotter
 import torch
 import math
 from tqdm import tqdm
-from src.ckpt import *
+from llm_rl.ckpt import *
 
 
 @dataclass
@@ -173,8 +173,8 @@ class SFTTrainer(CheckpointableTrainer):
 
 
 if __name__ == "__main__":
-    from src.models import Qwen2_5, LoraConfig
-    from src.data import GSM8kDatasetAdapter
+    from llm_rl.models import Qwen2_5, LoraConfig
+    from llm_rl.data import GSM8kDatasetAdapter
 
     qwen2_5 = Qwen2_5(lora_config=LoraConfig(
         alpha=16,

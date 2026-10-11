@@ -15,4 +15,5 @@ package = false
 members = [
     "base-rl",
     "llm-rl",
+    "agentic-rl",
 ]

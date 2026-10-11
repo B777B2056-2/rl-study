@@ -2,10 +2,10 @@ from dataclasses import dataclass
 import torch
 from tqdm import tqdm
 from copy import deepcopy
-from src.models import LoraConfig, inject_lora
-from src.plotter import Plotter
-from src.data import DPODataset
-from src.ckpt import *
+from llm_rl.models import LoraConfig, inject_lora
+from llm_rl.plotter import Plotter
+from llm_rl.data import DPODataset
+from llm_rl.ckpt import *
 
 
 @dataclass
@@ -264,8 +264,8 @@ class DPOTrainer(CheckpointableTrainer):
 
 
 if __name__ == "__main__":
-    from src.models import Qwen2_5, LoraConfig
-    from src.data import GSM8kDatasetAdapter
+    from llm_rl.models import Qwen2_5, LoraConfig
+    from llm_rl.data import GSM8kDatasetAdapter
 
     # ============================================================
     # 1. 加载 SFT 模型

@@ -5,7 +5,7 @@ RL 数据集：只需要 prompt，不需要 response
     - SFT：返回 input_ids + labels（response 已给定）
     - RL：返回 input_ids + ground_truth（response 由 Actor 生成）
 """
-from src.data.adapters import BaseDatasetAdapter
+from llm_rl.data.adapters import BaseDatasetAdapter
 import torch
 
 

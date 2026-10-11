@@ -183,7 +183,7 @@ def disabled_lora(model):
 if __name__ == "__main__":
     """
     LoRA 单元测试
-    运行: uv run python -m src.models.lora
+    运行: uv run python -m llm_rl.models.lora
     """
     import torch.nn as nn
 

@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 import torch
 from copy import deepcopy
-from src.plotter import Plotter
-from src.models import LoraConfig, inject_lora, disabled_lora
-from src.data import RLDataset
+from llm_rl.plotter import Plotter
+from llm_rl.models import LoraConfig, inject_lora, disabled_lora
+from llm_rl.data import RLDataset
 from typing import Callable
 from tqdm import tqdm
-from src.ckpt import *
+from llm_rl.ckpt import *
 
 @dataclass
 class PPOConfig:
@@ -458,8 +458,8 @@ class PPOTrainer(CheckpointableTrainer):
 
 
 if __name__ == "__main__":
-    from src.models import Qwen2_5, LoraConfig
-    from src.data import GSM8kDatasetAdapter
+    from llm_rl.models import Qwen2_5, LoraConfig
+    from llm_rl.data import GSM8kDatasetAdapter
     import re
 
     # ============================================================
