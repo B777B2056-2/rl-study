@@ -4,6 +4,10 @@ from typing import Tuple
 import torch
 from contextlib import contextmanager
 
+from src.infra.log import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class LoraConfig:
@@ -143,9 +147,9 @@ def merge_qlora_to_bf16(model_name, qlora_model, lora_config):
         qlora_lora_state, strict=False
     )
     if missing:
-        print(f"[merge_qlora_to_bf16] 警告：缺少 {len(missing)} 个参数")
+        logger.warning(f"[merge_qlora_to_bf16] 警告：缺少 {len(missing)} 个参数")
     if unexpected:
-        print(f"[merge_qlora_to_bf16] 警告：多余 {len(unexpected)} 个参数")
+        logger.warning(f"[merge_qlora_to_bf16] 警告：多余 {len(unexpected)} 个参数")
 
     # 4. 合并 LoRA 到 bf16 base
     merge_lora(base_model)

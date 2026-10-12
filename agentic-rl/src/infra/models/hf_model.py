@@ -4,6 +4,9 @@ from copy import deepcopy
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Optional
 from src.infra.models.lora import LoraConfig, inject_lora, load_lora, merge_lora, save_lora, merge_qlora_to_bf16
+from src.infra.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class HFModel:
@@ -50,11 +53,16 @@ class HFModel:
     def _init_model(self):
         if self._lora_config is None:
             self._model = self._load_base(use_qlora=self._use_qlora)
+            self._model.gradient_checkpointing_enable()
             return
         model = self._load_base(self._lora_config.use_qlora)
         for p in model.parameters():
             p.requires_grad = False
         inject_lora(model, self._lora_config)
+        # 开启梯度检查点
+        model.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
         self._model = model
     
     def _load_base(self, use_qlora: bool):
@@ -112,7 +120,7 @@ class HFModel:
                 device_map=self._device,
             )
             self._lora_config = None
-            print(f"[HFModel] 已加载合并模型: {merged_dir}")
+            logger.info(f"[HFModel] 已加载合并模型: {merged_dir}")
             return
 
         # ── 情况 2：base + LoRA adapter ──
@@ -120,7 +128,7 @@ class HFModel:
             config_path = os.path.join(lora_dir, "lora_config.json")
             if os.path.isfile(config_path):
                 self._lora_config = LoraConfig.load(config_path)
-                print(f"[HFModel] 已从磁盘加载 LoraConfig: {config_path}")
+                logger.info(f"[HFModel] 已从磁盘加载 LoraConfig: {config_path}")
             elif self._lora_config is None:
                 raise ValueError(
                     f"未找到 {config_path}，且未传入 lora_config，无法重建 LoRA 结构"
@@ -130,10 +138,10 @@ class HFModel:
 
             # QLoRA：自动合并为 bf16
             if self._lora_config.use_qlora:
-                print(f"[HFModel] 检测到 QLoRA，自动合并为 bf16 模型...")
+                logger.info(f"[HFModel] 检测到 QLoRA，自动合并为 bf16 模型...")
                 self._model = self._auto_merge_qlora(lora_dir)
                 self._lora_config = None
-                print(f"[HFModel] QLoRA 合并完成")
+                logger.info(f"[HFModel] QLoRA 合并完成")
                 return
 
             # 普通 LoRA：保持 LoRA 结构
@@ -144,7 +152,7 @@ class HFModel:
             load_lora(model, os.path.join(lora_dir, "lora.pt"))
 
             self._model = model
-            print(f"[HFModel] 已加载普通 LoRA: {lora_dir}")
+            logger.info(f"[HFModel] 已加载普通 LoRA: {lora_dir}")
             return
 
         # ── 情况 3：save_dir 直接是完整模型 ──
@@ -155,7 +163,7 @@ class HFModel:
             device_map=self._device,
         )
         self._lora_config = None
-        print(f"[HFModel] 已加载完整模型: {save_dir}")
+        logger.info(f"[HFModel] 已加载完整模型: {save_dir}")
     
     def _from_pretrained_with_fallback(self, **kwargs):
         """统一：先本地缓存，失败再远程下载。"""
@@ -164,9 +172,9 @@ class HFModel:
             model = AutoModelForCausalLM.from_pretrained(
                 self._model_name, local_files_only=True, **merged
             )
-            print(f"[HFModel] 已从本地缓存加载: {self._model_name}")
+            logger.info(f"[HFModel] 已从本地缓存加载: {self._model_name}")
         except OSError:
-            print(f"[HFModel] 本地未找到缓存，正在从远程下载: {self._model_name}")
+            logger.info(f"[HFModel] 本地未找到缓存，正在从远程下载: {self._model_name}")
             model = AutoModelForCausalLM.from_pretrained(
                 self._model_name, **merged
             )
@@ -253,7 +261,7 @@ class HFModel:
         if not self.has_lora:
             self._model.save_pretrained(save_dir)
             self._tokenizer.save_pretrained(save_dir)
-            print(f"[HFModel] 完整模型已保存到 {save_dir}")
+            logger.info(f"[HFModel] 完整模型已保存到 {save_dir}")
             return
 
         # ============ 有 LoRA：先保存 adapter ============
@@ -263,7 +271,7 @@ class HFModel:
         self._tokenizer.save_pretrained(lora_dir)
         assert self._lora_config is not None
         self._lora_config.save(os.path.join(lora_dir, "lora_config.json"))
-        print(f"[HFModel] LoRA adapter 已保存到 {lora_dir}")
+        logger.info(f"[HFModel] LoRA adapter 已保存到 {lora_dir}")
 
         # ============ 合并 ============
         merged_dir = os.path.join(save_dir, "merged")
@@ -283,7 +291,7 @@ class HFModel:
 
         merged.save_pretrained(merged_dir)
         self._tokenizer.save_pretrained(merged_dir)
-        print(f"[HFModel] 合并模型已保存到 {merged_dir}")
+        logger.info(f"[HFModel] 合并模型已保存到 {merged_dir}")
 
         del merged
         torch.cuda.empty_cache()

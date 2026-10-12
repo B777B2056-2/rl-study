@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from tqdm import tqdm
 from typing import Optional
 
+from src.infra.log import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class CkptConfig:
@@ -38,7 +42,7 @@ class CheckpointManager:
             path = self.latest_path()
             if path is None:
                 raise FileNotFoundError("没有 checkpoint")
-            print(f"[Ckpt] 加载最新 {path}")
+            logger.info(f"[Ckpt] 加载最新 {path}")
         return torch.load(path, map_location=device, weights_only=False)
 
     def latest_path(self):
@@ -116,11 +120,11 @@ class CheckpointableTrainer:
 
     def maybe_resume(self) -> bool:
         if self._ckpt is None or not self._ckpt.has_checkpoint():
-            print("[Trainer] 无 checkpoint，从头开始")
+            logger.info("[Trainer] 无 checkpoint，从头开始")
             return False
         state = self._ckpt.load(device=self._get_device())
         self.load_state_dict(state)
-        print(f"[Trainer] 已恢复: epoch={self._epoch}, step={self._global_step}")
+        logger.info(f"[Trainer] 已恢复: epoch={self._epoch}, step={self._global_step}")
         return True
 
     def maybe_save(self):

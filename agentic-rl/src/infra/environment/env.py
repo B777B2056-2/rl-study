@@ -4,12 +4,11 @@ from src.infra.environment.tools import Tool, ToolRouter
 
 class Environment(object):
     """环境类"""
-    def __init__(self, max_turns: int, tool_router: ToolRouter, done_action_kinds: frozenset[str]):
+    def __init__(self, max_turns: int, tool_router: ToolRouter):
         self._max_turns = max_turns            # 最大轮次
         self._turns = 0                        # 已执行 action 次数
         self._register_tools: List[Tool] = []  # 已注册的工具调用
         self._tool_router = tool_router        # 工具路由，根据模型输出的cmd来决定调用哪个工具
-        self._done_action_kinds = done_action_kinds
 
     def register_tool(self, tool: Tool) -> None:
         """注册一个工具"""
@@ -35,7 +34,7 @@ class Environment(object):
         self._turns += 1
 
         # 2. 检查模型决策是否为终止回合
-        if action.kind in self._done_action_kinds:
+        if action.is_done:
             return "", True
 
         # 3. 未到终止回合，继续工具调用

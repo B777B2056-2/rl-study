@@ -8,7 +8,6 @@ from typing import List, Optional
 from tqdm import tqdm
 
 from src.infra.plotter import Plotter
-
 from src.infra.models.lora import LoraConfig, inject_lora
 from src.infra.trainer.ckpt import *
 from src.infra.dataset.dataset import BaseSample, BaseDataset
@@ -30,6 +29,7 @@ class GRPOConfig:
     device: str
     ratio_clip_eps: float = 0.2 # 新旧logp裁剪
     grad_clip_eps: float = 1.0  # 梯度裁剪
+    system_prompt: Optional[str] = None  # 采样时注入的 system prompt（None 表示不注入）
 
 class TrajectoryGroup:
     "一个组，包含多条轨迹"
@@ -186,11 +186,12 @@ class GRPOTrainer(CheckpointableTrainer):
             raise RuntimeError(f"Unsupported backend: {type(cfg.backend)}")
 
         return RolloutEngine(
-            tokenizer=self._tokenizer, 
-            env=env, 
-            reward_fn=reward_fn, 
-            inference_backend=rollout_inference_backend, 
+            tokenizer=self._tokenizer,
+            env=env,
+            reward_fn=reward_fn,
+            inference_backend=rollout_inference_backend,
             device=self._config.device,
+            system_prompt=self._config.system_prompt,
         )
 
     @classmethod
@@ -311,12 +312,14 @@ class GRPOTrainer(CheckpointableTrainer):
 
             for batch in tqdm(train_data_loader, desc="Training"):
                 # 一个batch
+                self._actor.eval()   # 采样阶段用 eval：关闭 dropout/梯度检查点，generate 在 no_grad 下
                 groups = []
                 for sample in batch:
                     # 1. 采样轨迹 + 组内归一化
                     group = self._rollout(sample)
                     groups.append(group)
 
+                self._actor.train()  # 更新阶段用 train：开启 dropout 和梯度检查点
                 # 2. 计算loss
                 batch_group_loss = self._compute_batch_loss(groups)
 

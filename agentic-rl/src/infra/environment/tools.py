@@ -29,6 +29,7 @@ class Action:
     流向：ToolRouter.route() 产出 → Environment 消费
     """
     kind: str           # 工具名
+    is_done: bool       # 是否到达终止动作
     raw_text: str = ""  # 解析来源的原始文本（调试用）
 
 

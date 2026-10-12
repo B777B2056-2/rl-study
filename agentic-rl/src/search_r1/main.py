@@ -2,9 +2,9 @@ from src.infra.models.hf_model import HFModel
 from src.infra.models.lora import LoraConfig
 from src.infra.environment.env import Environment
 from src.infra.rollout.backends import InferenceBackendConfig, SamplingParams, HFBackendConfig
-from src.infra.rollout.engine import RolloutEngine
 from src.infra.trainer.ckpt import CkptConfig
 from src.infra.trainer.grpo import GRPOConfig, GRPOTrainer
+from src.infra.log import setup_logging
 
 from src.search_r1.dataset import NqAndHotpotqaDataset
 from src.search_r1.tools import SearchTool, TagRouter
@@ -12,9 +12,12 @@ from src.search_r1.reward import SearchR1Reward
 
 
 def main():
-    BATCH_SIZE = 4
+    BATCH_SIZE = 1
     MAX_TURNS = 5
     DEVICE = "cuda"
+
+    # 日志：infra 内部的 print 统一输出到文件
+    setup_logging("outputs/search-r1/infra.log")
 
     # 1. 加载模型
     hf_model = HFModel(model_name='Qwen/Qwen2.5-0.5B', device=DEVICE, use_qlora=True)
@@ -29,7 +32,6 @@ def main():
     env = Environment(
         max_turns=MAX_TURNS, 
         tool_router=tool_router, 
-        done_action_kinds=frozenset(["answer", "invalid"]),
     )
 
     # 4. 构建奖励计算器

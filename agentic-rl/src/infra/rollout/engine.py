@@ -1,11 +1,15 @@
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional
 import torch
 
+from src.infra.log import get_logger
 from src.infra.dataset.dataset import BaseSample
 from src.infra.environment.env import Environment
 from src.infra.reward.reward import AgentTraceType, AgentTraceItem, RewardCalcContext, RewardFn
 from src.infra.rollout.backends import InferenceBackend
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -19,12 +23,13 @@ class Trajectory:
 
 class RolloutEngine(object):
     """采样引擎，进行一次完整轨迹采样"""
-    def __init__(self, 
-                 tokenizer, 
-                 env: Environment, 
-                 reward_fn: RewardFn, 
-                 inference_backend: InferenceBackend, 
+    def __init__(self,
+                 tokenizer,
+                 env: Environment,
+                 reward_fn: RewardFn,
+                 inference_backend: InferenceBackend,
                  device: str,
+                 system_prompt: Optional[str] = None,
                 ):
         super().__init__()
 
@@ -33,6 +38,7 @@ class RolloutEngine(object):
         self._reward_fn = reward_fn
         self._inference_backend = inference_backend
         self._device = device
+        self._system_prompt = system_prompt
     
     def sync_weights(self, state_dict: dict) -> None:
         """从训练侧同步权重"""
@@ -47,9 +53,13 @@ class RolloutEngine(object):
         self._env.reset()
 
         # 2. 循环生成决策，直到结束（输出最终回答 或 非法命令）
-        # 第一轮：走 chat template
+        # 第一轮：走 chat template；可选注入外部自定义 system prompt
+        messages = []
+        if self._system_prompt:
+            messages.append({"role": "system", "content": self._system_prompt})
+        messages.append({"role": "user", "content": prompt})
         prompt_text = self._tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -95,6 +105,7 @@ class RolloutEngine(object):
             delta_input_text = obs
 
         # 4. 计算单轨迹奖励
+        logger.info(f"[RolloutEngine] 轨迹： {str(reward_calc_ctx)}")
         reward = self._reward_fn.score(ctx=reward_calc_ctx, sample=sample)
 
         return Trajectory(

@@ -20,11 +20,17 @@ class AgentTraceItem:
     def end(self) -> bool:
         return self.a_type == AgentTraceType.END
 
+    def __str__(self) -> str:
+        return f"{self.a_type.value}: {self.content}"
+
 
 @dataclass
 class RewardCalcContext:
     """rollout采样时，计算奖励的上下文"""
     agent_full_trace: List[AgentTraceItem] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        return " -> ".join(str(item) for item in self.agent_full_trace)
 
 
 class RewardFn(ABC):

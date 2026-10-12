@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import List, Any, Dict, Optional
 from ddgs import DDGS
 from src.infra.environment.tools import Action, Tool, ToolResult, ToolRouter
+from src.infra.log import get_logger
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -28,6 +32,7 @@ class SearchTool(Tool):
         retry_delay: float = 1.0,
         timeout: int = 10,
         cache_size: int = 1000,
+        backend: str = "duckduckgo",
     ):
         self._DDGS = DDGS
         self.top_k = top_k
@@ -36,6 +41,7 @@ class SearchTool(Tool):
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.timeout = timeout
+        self.backend = backend
         self._cache: Dict[tuple, List[SearchResult]] = {}
         self._cache_size = cache_size
 
@@ -107,11 +113,9 @@ class SearchTool(Tool):
                 self._cache[cache_key] = results
                 return results
             except Exception as e:
-                print(
-                    f"DuckDuckGo 请求失败 (attempt {attempt+1}/{self.max_retries}): {e}"
-                )
+                logger.warning(f"[SearchTool] 请求失败 (attempt {attempt+1}/{self.max_retries}): {e}")
                 if attempt == self.max_retries - 1:
-                    print(f"查询 '{query}' 最终失败，返回空结果")
+                    logger.warning(f"[SearchTool] 查询 '{query}' 最终失败，返回空结果")
                     return None
                 sleep = self.retry_delay * (2 ** attempt) + random.uniform(0, 0.5)
                 time.sleep(sleep)
@@ -119,12 +123,14 @@ class SearchTool(Tool):
         return None
 
     def _raw_search(self, query: str, top_k: int) -> List[SearchResult]:
-        with self._DDGS(
-            region=self.region,
-            safesearch=self.safesearch,
-            timeout=self.timeout,
-        ) as ddgs:
-            raw = list(ddgs.text(query, max_results=top_k))
+        with self._DDGS(timeout=self.timeout) as ddgs:
+            raw = list(ddgs.text(
+                query,
+                backend=self.backend,
+                region=self.region,
+                safesearch=self.safesearch,
+                max_results=top_k,
+            ))
 
         return [
             SearchResult(
@@ -170,19 +176,19 @@ class TagRouter(ToolRouter):
         content = self._extract(text, self.answer_kind)
         if content is not None:
             if content:
-                return Action(kind=self.answer_kind, raw_text=content)
-            return Action(kind=self.invalid_kind)
+                return Action(kind=self.answer_kind, is_done=True, raw_text=content)
+            return Action(kind=self.invalid_kind, is_done=True)
 
         # 2. 遍历所有工具 tag
         for tag in self._tags:
             content = self._extract(text, tag)
             if content is not None:
                 if content:
-                    return Action(kind=tag, raw_text=content)
-                return Action(kind=self.invalid_kind)
+                    return Action(kind=tag, is_done=False, raw_text=content)
+                return Action(kind=self.invalid_kind, is_done=True)
 
         # 3. 无匹配
-        return Action(kind=self.invalid_kind)
+        return Action(kind=self.invalid_kind, is_done=True)
 
     @staticmethod
     def _extract(text: str, tag: str) -> "str | None":
