@@ -1,14 +1,16 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 from torch.utils.data import DataLoader
 
 
 @dataclass(frozen=True)
 class BaseSample:
-    """所有任务样本的最小契约。Trainer 只依赖这两个字段。"""
+    """所有任务样本的最小契约。Trainer 只依赖这些字段。"""
     id: str
-    prompt: str
+    system_prompt: Optional[str]
+    user_prompt: str
+    outputs: Any
 
 
 class BaseDataset(ABC):

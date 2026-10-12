@@ -29,7 +29,6 @@ class GRPOConfig:
     device: str
     ratio_clip_eps: float = 0.2 # 新旧logp裁剪
     grad_clip_eps: float = 1.0  # 梯度裁剪
-    system_prompt: Optional[str] = None  # 采样时注入的 system prompt（None 表示不注入）
 
 class TrajectoryGroup:
     "一个组，包含多条轨迹"
@@ -191,7 +190,6 @@ class GRPOTrainer(CheckpointableTrainer):
             reward_fn=reward_fn,
             inference_backend=rollout_inference_backend,
             device=self._config.device,
-            system_prompt=self._config.system_prompt,
         )
 
     @classmethod

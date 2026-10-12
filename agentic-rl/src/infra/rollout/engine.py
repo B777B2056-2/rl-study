@@ -29,7 +29,6 @@ class RolloutEngine(object):
                  reward_fn: RewardFn,
                  inference_backend: InferenceBackend,
                  device: str,
-                 system_prompt: Optional[str] = None,
                 ):
         super().__init__()
 
@@ -38,7 +37,6 @@ class RolloutEngine(object):
         self._reward_fn = reward_fn
         self._inference_backend = inference_backend
         self._device = device
-        self._system_prompt = system_prompt
     
     def sync_weights(self, state_dict: dict) -> None:
         """从训练侧同步权重"""
@@ -46,18 +44,17 @@ class RolloutEngine(object):
 
     def rollout(self, sample: BaseSample) -> Trajectory:
         """生成一条完整轨迹（prompt -> reply -> action -> observation -> action -> ... -> final_answer)"""
-        prompt = sample.prompt      
         reward_calc_ctx = RewardCalcContext() 
-        reward_calc_ctx.agent_full_trace.append(AgentTraceItem(a_type=AgentTraceType.INPUT, content=prompt))
+        reward_calc_ctx.agent_full_trace.append(AgentTraceItem(a_type=AgentTraceType.INPUT, content=sample.user_prompt))
         # 1. 重置环境
         self._env.reset()
 
         # 2. 循环生成决策，直到结束（输出最终回答 或 非法命令）
         # 第一轮：走 chat template；可选注入外部自定义 system prompt
         messages = []
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if sample.system_prompt:
+            messages.append({"role": "system", "content": sample.system_prompt})
+        messages.append({"role": "user", "content": sample.user_prompt})
         prompt_text = self._tokenizer.apply_chat_template(
             messages,
             tokenize=False,

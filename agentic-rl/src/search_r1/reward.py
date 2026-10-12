@@ -47,5 +47,5 @@ class SearchR1Reward(RewardFn):
         if not final_answer:
             return 0.0
         
-        gold = {SearchR1Reward._normalize(g) for g in sample.golden_answers}
+        gold = {SearchR1Reward._normalize(g) for g in sample.outputs}
         return 1.0 if SearchR1Reward._normalize(final_answer) in gold else 0.0

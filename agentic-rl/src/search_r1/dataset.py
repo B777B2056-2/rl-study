@@ -27,11 +27,9 @@ class NqAndHotpotqaSample(BaseSample):
     NQ + HotpotQA 样本。
 
     继承 BaseSample 的 id / prompt，额外携带：
-        - golden_answers: 评估用标准答案
         - data_source:   数据集来源（"nq" / "hotpotqa"）
         - messages:      保留 role 结构，方便走 chat template
     """
-    golden_answers: tuple[str, ...]
     data_source: str
     messages: tuple[Message, ...]
 
@@ -51,8 +49,9 @@ class NqAndHotpotqaSample(BaseSample):
 
         return cls(
             id=row["id"],
-            prompt=prompt,
-            golden_answers=tuple(row["golden_answers"]),
+            system_prompt=None,
+            user_prompt=prompt,
+            outputs=tuple(row["golden_answers"]),
             data_source=row["data_source"],
             messages=messages,
         )

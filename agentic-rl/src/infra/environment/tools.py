@@ -54,7 +54,7 @@ class Tool(ABC):
     
     @abstractmethod
     def parse_args(self, raw_text: str) -> Dict[str, Any]:
-        """把裸文本解析成结构化参数。失败时抛 ParseError。"""
+        """把裸文本解析成结构化参数。失败时抛 RuntimeError。"""
         ...
     
     @abstractmethod
