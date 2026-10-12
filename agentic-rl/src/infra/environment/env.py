@@ -38,4 +38,4 @@ class Environment(object):
             return "", True
 
         # 3. 未到终止回合，继续工具调用
-        return self._tool_router.call_tool_by_action(action), False
+        return self._tool_router.call_tools_by_action(action), False

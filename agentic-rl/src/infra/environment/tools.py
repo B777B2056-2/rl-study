@@ -5,7 +5,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+
+
+@dataclass
+class ToolCall:
+    kind: str
+    raw_text: str = ""
 
 
 @dataclass
@@ -28,9 +34,8 @@ class Action:
     
     流向：ToolRouter.route() 产出 → Environment 消费
     """
-    kind: str           # 工具名
-    is_done: bool       # 是否到达终止动作
-    raw_text: str = ""  # 解析来源的原始文本（调试用）
+    is_done: bool                                       # 是否到达终止动作
+    calls: List[ToolCall] = field(default_factory=list) # 工具调用列表
 
 
 # ============================================================
@@ -61,11 +66,6 @@ class Tool(ABC):
     def run(self, args: Dict[str, Any]) -> ToolResult:
         """执行工具，返回结构化结果。"""
         ...
-    
-    @abstractmethod
-    def format_observation(self, result: ToolResult) -> str:
-        """把 ToolResult 包成 observation 文本。"""
-        ...
 
 
 # ============================================================
@@ -87,7 +87,7 @@ class ToolRouter(ABC):
         - HybridRouter: 多策略按优先级组合
     """
     
-    def __init__(self, tools: List[Tool]):
+    def __init__(self, tools: Sequence[Tool]):
         super().__init__()
         self._tools_by_name: Dict[str, Tool] = {t.name: t for t in tools}
     
@@ -96,8 +96,28 @@ class ToolRouter(ABC):
         """解析 LLM 输出，返回结构化 Action。"""
         ...
 
-    def call_tool_by_action(self, action: Action) -> str:
-        tool = self._tools_by_name[action.kind]
-        args = tool.parse_args(action.raw_text)
+    @abstractmethod
+    def format_observation_for_single_result(self, result: ToolResult) -> str:
+        """把 单个ToolResult 包成 observation 文本。"""
+        ...
+
+    @abstractmethod
+    def format_observation_for_results(self, results: List[ToolResult]) -> str:
+        """把 并行发生的多个ToolResult 包成 observation 文本。"""
+        ...
+
+    def _call_tool(self, call: ToolCall) -> ToolResult:
+        tool = self._tools_by_name[call.kind]
+        args = tool.parse_args(call.raw_text)
         result = tool.run(args)
-        return tool.format_observation(result)
+        return result
+
+    def call_tools_by_action(self, action: Action) -> str:
+        results = [self._call_tool(tc) for tc in action.calls]
+
+        if len(results) == 0:
+            return ''
+        elif len(results) == 1:
+            return self.format_observation_for_single_result(results[0])
+        else:
+            return self.format_observation_for_results(results)

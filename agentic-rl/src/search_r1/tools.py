@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import List, Any, Dict, Optional
 from ddgs import DDGS
-from src.infra.environment.tools import Action, Tool, ToolResult, ToolRouter
+from src.infra.environment.tools import Action, Tool, ToolCall, ToolResult, ToolRouter
 from src.infra.log import get_logger
 
 
@@ -78,14 +78,6 @@ class SearchTool(Tool):
                 "num_results": len(results),
             },
         )
-
-    def format_observation(self, result: ToolResult) -> str:
-        """把 ToolResult 包成 <information>...</information> 文本。"""
-        if not result.success:
-            return f"<information>Search failed: {result.error}</information>"
-        if not result.content:
-            return "<information>No results found.</information>"
-        return f"<information>{result.content}</information>"
 
     # ============================================================
     # 内部实现：DDGS 调用 + 缓存 + 重试
@@ -171,24 +163,35 @@ class TagRouter(ToolRouter):
         # tag 就是工具名
         self._tags = list(self._tools_by_name.keys())
 
+    def format_observation_for_single_result(self, result: ToolResult) -> str:
+        """把 ToolResult 包成 <information>...</information> 文本。"""
+        if not result.success:
+            return f"<information>Search failed: {result.error}</information>"
+        if not result.content:
+            return "<information>No results found.</information>"
+        return f"<information>{result.content}</information>"
+
+    def format_observation_for_results(self, results: List[ToolResult]) -> str:
+        return '\r\n'.join([self.format_observation_for_single_result(r) for r in results])
+
     def route(self, text: str) -> Action:
         # 1. 优先检测 answer
         content = self._extract(text, self.answer_kind)
         if content is not None:
             if content:
-                return Action(kind=self.answer_kind, is_done=True, raw_text=content)
-            return Action(kind=self.invalid_kind, is_done=True)
+                return Action(calls=[ToolCall(kind=self.answer_kind, raw_text=content)], is_done=True)
+            return Action(calls=[ToolCall(kind=self.invalid_kind)], is_done=True)
 
         # 2. 遍历所有工具 tag
         for tag in self._tags:
             content = self._extract(text, tag)
             if content is not None:
                 if content:
-                    return Action(kind=tag, is_done=False, raw_text=content)
-                return Action(kind=self.invalid_kind, is_done=True)
+                    return Action(calls=[ToolCall(kind=tag, raw_text=content)], is_done=False)
+                return Action(calls=[ToolCall(kind=self.invalid_kind)], is_done=True)
 
         # 3. 无匹配
-        return Action(kind=self.invalid_kind, is_done=True)
+        return Action(calls=[ToolCall(kind=self.invalid_kind)], is_done=True)
 
     @staticmethod
     def _extract(text: str, tag: str) -> "str | None":
