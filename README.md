@@ -9,6 +9,8 @@
 - [第一章：强化学习基本概念](#第一章强化学习基本概念)
 - [第二章：传统强化学习](#第二章传统强化学习)
 - [第三章：LLM 微调](#第三章llm-微调)
+- [第四章：Agentic RL](#第四章agentic-rl)
+- [第五章：Agentic RL：Tool RL](#第五章agentic-rltool-rl)
 
 ---
 
@@ -533,63 +535,16 @@ $$
 
 ### Teacher Forcing（小知识点）
 
-> **什么是 Teacher Forcing**：训练时，把标准答案作为输入，让模型预测下一个 token。"Teacher"是标准答案，"Forcing"是强制把标准答案喂给模型，而不是让模型用自己生成的 token 作为下一步的输入。
+> **什么是 Teacher Forcing**：训练时，把标准答案作为输入，让模型预测下一个 token。"Teacher"是标准答案，"Forcing"是强制把标准答案喂给模型，而不是用模型自己上一步生成的 token。
 >
 > **为什么需要**：语言模型是自回归的，第 $t$ 个 token 的预测依赖前 $t-1$ 个 token。
 >
-> 如果不用 Teacher Forcing：
->
-> ```
-> 第 1 步：输入 [BOS]，模型预测 → "我"
-> 第 2 步：输入 [BOS, 我]，模型预测 → "爱"      ← 用模型自己上一步的输出
-> 第 3 步：输入 [BOS, 我, 爱]，模型预测 → "学习"
-> ```
->
-> **问题**：
+> **如果不用 Teacher Forcing**（用模型自己上一步的输出当下一步输入）：
 >
 > - 第 1 步错了，第 2 步输入也错，错误累积
-> - 要预测 N 个 token，就要前向 N 次，串行，慢
+> - 预测 N 个 token 要前向 N 次，串行，慢
 >
-> **具体流程**：
->
-> **第 1 步：构造输入**
->
-> ```
-> prompt_ids   = [1, +, 1, =, ?]            # 5 个 token
-> response_ids = [2, EOS]                   # 2 个 token
->
-> input_ids = [1, +, 1, =, ?, 2, EOS]       # 7 个 token
-> ```
->
-> **第 2 步：构造标签**
->
-> ```
-> labels = [-100, -100, -100, -100, -100, 2, EOS]
->          ←────── prompt 部分忽略 ──────→ ←─ response ─→
-> ```
->
-> **第 3 步：一次前向，得到每个位置的预测**
->
-> ```
-> 输入: [1, +, 1, =, ?, 2, EOS]
-> 位置:  0  1  2  3  4  5  6
->
-> 位置 4 的 logits: 预测下一个 token（应该是 "2"）      ← response 第 1 个
-> 位置 5 的 logits: 预测下一个 token（应该是 "EOS"）    ← response 第 2 个
-> ```
->
-> **第 4 步：Shift 对齐**
->
-> ```
-> shift_logits = 位置 0 1 2 3 4 5 的 logits
-> shift_labels = 位置 1 2 3 4 5 6 的标签 = [+, 1, =, ?, 2, EOS]
-> ```
->
-> **第 5 步：交叉熵**
->
-> ```
-> loss = cross_entropy(shift_logits, shift_labels, ignore_index=-100)
-> ```
+> **Teacher Forcing 的做法**：一次前向，把整条标准答案喂进去，所有位置并行预测（上面的 `数据构造` 和后面的 `Shift` 小节就是在做这件事）。
 >
 > **好处**：
 >
@@ -600,12 +555,7 @@ $$
 > **为什么模型不能"抄答案"**：关键在**因果 mask（Causal Mask）**。自回归模型的注意力是因果的，每个位置只能看到自己和左边的 token。
 >
 > ```
-> 位置 4（"?"）能看到：
-> 位置 0: 1
-> 位置 1: +
-> 位置 2: 1
-> 位置 3: =
-> 位置 4: ?
+> 位置 4（"?"）能看到：位置 0~4（1, +, 1, =, ?）
 > 看不到位置 5（"2"）  ← 被 mask 挡住
 > ```
 >
@@ -620,10 +570,7 @@ $$
 > | 前向次数 | 1 次 | N 次 |
 > | 错误 | 不累积 | 会累积 |
 >
-> **类比**：
->
-> - **用 Teacher Forcing**：老师手把手纠正，每一步都从正确的起点开始，孩子只需要学"给定正确前缀，下一个字写什么"。
-> - **不用 Teacher Forcing**：孩子写错一个字，老师不管，继续往下写，错误越滚越大。
+> **类比**：用 Teacher Forcing = 老师手把手纠正，每一步都从正确的起点开始；不用 = 孩子写错字继续往下写，错误越滚越大。
 
 ### Shift
 
@@ -1074,34 +1021,6 @@ $$
 
 **功能**：对已有的 response 算一次前向的 log 概率（给已有回答打分，不生成）。
 
-```python
-def _calc_log_probs(model, input_ids, input_attention_mask,
-                    response_ids, response_attention_mask):
-    # 1. 拼接为完整序列
-    full_ids = torch.concat([input_ids, response_ids], dim=1)
-    full_attention_mask = torch.concat(
-        [input_attention_mask, response_attention_mask], dim=1
-    )
-
-    # 2. 一次前向
-    prompt_len = input_ids.shape[1]
-    full_logits = model(full_ids, full_attention_mask)      # (B, P+R, V)
-    response_logits = full_logits[:, prompt_len-1:-1, :]    # 切 response（差一位）
-    log_probs = F.log_softmax(response_logits, dim=-1)      # (B, R, V)
-
-    # 3. 取实际 token 的 log 概率
-    log_probs = log_probs.gather(
-        -1, response_ids.unsqueeze(-1)
-    ).squeeze(-1)                                           # (B, R)
-
-    # 4. 忽略 padding
-    log_probs = log_probs * response_attention_mask.float()
-
-    # 5. 整段求和
-    log_probs = log_probs.sum(dim=-1)                       # (B,)
-    return log_probs
-```
-
 **关键点**：
 
 > **`gather` 的作用**：从"整个词表的 log 概率 `(B, R, V)`"里，挑出"实际那个 token"的 log 概率 `(B, R)`。
@@ -1224,15 +1143,15 @@ PPO / DPO
 | 显存 | 低 | 高 | 中 |
 | 稳定性 | 稳定 | 需调参 | 稳定 |
 
-### 学习目标对照
+### 阶段速查（学习目标 + 核心公式）
 
-| 阶段 | 学习目标 |
-|---|---|
-| SFT | 最大化 response 每个 token 的对数概率 |
-| LoRA | 用低秩增量逼近全参微调的效果 |
-| QLoRA | 同 LoRA，但省显存 |
-| PPO | 最大化 RM 分数，同时不偏离 SFT 太远 |
-| DPO | 让 chosen 的隐式奖励 > rejected 的隐式奖励 |
+| 阶段 | 学习目标 | 核心公式 |
+|---|---|---|
+| SFT | 最大化 response 每个 token 的对数概率 | $L = -\sum_t \log \pi_\theta(y_t \mid y_{\lt t})$ |
+| LoRA | 用低秩增量逼近全参微调的效果 | $y = Wx + \frac{\alpha}{r}BAx$ |
+| QLoRA | 同 LoRA，但省显存 | 同 LoRA，但 base 是 4-bit |
+| PPO | 最大化 RM 分数，同时不偏离 SFT 太远 | $L = L^{\text{policy}} + 0.5 L^{\text{value}}$ |
+| DPO | 让 chosen 的隐式奖励 > rejected 的隐式奖励 | $L = -\log \sigma(\beta \log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)} - \beta \log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)})$ |
 
 ### PPO vs DPO 的哲学区别
 
@@ -1343,21 +1262,10 @@ SFT → DPO（暖启动）→ PPO（精调）
 | 想要简单稳定 | SFT → DPO |
 | 想要上限高 | SFT → DPO → PPO |
 
-### 核心公式对照
-
-| 阶段 | 核心公式 |
-|---|---|
-| SFT | $L = -\sum_t \log \pi_\theta(y_t \mid y_{\lt t})$ |
-| LoRA | $y = Wx + \frac{\alpha}{r}BAx$ |
-| QLoRA | 同 LoRA，但 base 是 4-bit |
-| PPO | $L = L^{\text{policy}} + 0.5 L^{\text{value}}$ |
-| PPO 的 KL | $r_t = -\beta(\log\pi_\theta - \log\pi_{\text{ref}})$ |
-| PPO 的 GAE | $A_t = \delta_t + \gamma\lambda A_{t+1}$ |
-| DPO | $L = -\log \sigma(\beta \log\frac{\pi_\theta(y_w)}{\pi_{\text{ref}}(y_w)} - \beta \log\frac{\pi_\theta(y_l)}{\pi_{\text{ref}}(y_l)})$ |
 
 ---
 
-## 3.6 GRPO（组相对策略优化）
+## 3.7 GRPO（组相对策略优化）
 
 ### 学习目标
 
@@ -1532,164 +1440,6 @@ clip 损失
 4. 清空数据，回到第 1 步
 ```
 
-### 关键实现：`_collect_traces`
-
-```python
-@torch.no_grad()
-def _collect_traces(self, input_ids, attention_mask, ground_truth):
-    B = input_ids.size(0)
-    G = self._config.n_sample_group
-    P = input_ids.size(1)
-
-    # 1. 采样 G 个回答
-    group_responses = []
-    group_responses_mask = []
-    for _ in range(G):
-        output_ids, output_mask = self._actor_generate_full_replay(
-            input_ids, attention_mask,
-        )
-        group_responses.append(output_ids)
-        group_responses_mask.append(output_mask)
-
-    # 2. pad 到最大长度
-    max_len = max(r.size(1) for r in group_responses)
-    pad_id = self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
-    padded_ids, padded_masks = [], []
-    for ids, mask in zip(group_responses, group_responses_mask):
-        pad_len = max_len - ids.size(1)
-        if pad_len > 0:
-            ids = torch.cat([
-                ids,
-                torch.full((ids.size(0), pad_len), pad_id,
-                           dtype=ids.dtype, device=ids.device),
-            ], dim=1)
-            mask = torch.cat([
-                mask,
-                torch.zeros((mask.size(0), pad_len),
-                            dtype=mask.dtype, device=mask.device),
-            ], dim=1)
-        padded_ids.append(ids)
-        padded_masks.append(mask)
-
-    output_ids = torch.stack(padded_ids, dim=1)              # (B, G, L)
-    output_attention_mask = torch.stack(padded_masks, dim=1) # (B, G, L)
-    R = output_ids.size(-1) - P
-
-    # 3. 展平前向
-    flat_ids = output_ids.reshape(B * G, -1)
-    flat_mask = output_attention_mask.reshape(B * G, -1)
-    actor_logp, response_ids = _calc_log_probs(P, flat_ids, self._actor, flat_mask)
-    # actor_logp: (B*G, R)
-
-    # 4. RM 打分
-    group_response_ids = response_ids.reshape(B, G, -1)
-    rm_scores_list = []
-    for n in range(G):
-        responses = tokenizer.batch_decode(
-            group_response_ids[:, n, :], skip_special_tokens=True,
-        )
-        rm_scores = torch.tensor([
-            reward_fn(r, gt) for r, gt in zip(responses, ground_truth)
-        ], dtype=torch.float32, device=device)
-        rm_scores_list.append(rm_scores)
-    rm_scores = torch.stack(rm_scores_list, dim=1)           # (B, G)
-
-    # 5. 组内归一化
-    mean_r = rm_scores.mean(dim=1, keepdim=True)             # (B, 1)
-    std_r = rm_scores.std(dim=1, keepdim=True)               # (B, 1)
-    advantages = (rm_scores - mean_r) / (std_r + 1e-8)       # (B, G)
-
-    # 6. 广播到每 token
-    advantages = advantages.reshape(B * G, 1).expand(-1, R)  # (B*G, R)
-
-    return {
-        "input_ids":      output_ids,                # (B, G, P+R)
-        "attention_mask": output_attention_mask,
-        "prompt_len":     P,
-        "response_len":   R,
-        "log_probs":      actor_logp,                # (B*G, R)
-        "advantages":     advantages,                # (B*G, R)
-    }
-```
-关键点：
-
-- 循环 G 次采样，pad 到最大长度再 torch.stack
-
-- 展平成 (B*G, ...) 前向一次，比循环前向快
-
-- 组内归一化用 dim=1，对 G 维操作
-
-- 优势广播到每 token：(B*G, 1) → (B*G, R)
-
-### 关键实现：_update_batch
-```python
-def _update_batch(self, traces):
-    B = traces["batch_size"]
-    G = self._config.n_sample_group
-    R = traces["response_len"]
-    P = traces["prompt_len"]
-
-    input_ids = traces["input_ids"]                  # (B, G, P+R)
-    attention_mask = traces["attention_mask"]
-    old_logp = traces["log_probs"]                   # (B*G, R)
-    advantages = traces["advantages"]                # (B*G, R)
-
-    # 展平前向
-    flat_ids = input_ids.reshape(B * G, -1)
-    flat_mask = attention_mask.reshape(B * G, -1)
-
-    # 新策略前向（带梯度）
-    new_logp, _ = _calc_log_probs(P, flat_ids, self._actor, flat_mask)
-    # (B*G, R)
-
-    # Reference 前向（no_grad）
-    with torch.no_grad():
-        ref_logp, _ = _calc_log_probs(P, flat_ids, self._ref_model, flat_mask)
-    # (B*G, R)
-
-    # KL（带梯度，因为 new_logp 有梯度）
-    kl = new_logp - ref_logp                         # (B*G, R)
-
-    # 概率比
-    ratio = torch.exp(new_logp - old_logp)           # (B*G, R)
-
-    # clip 损失
-    surr1 = ratio * advantages
-    surr2 = self._clip(ratio) * advantages
-    policy_loss = -torch.min(surr1, surr2).mean()
-
-    # 总损失 = 策略损失 + β·KL
-    loss = policy_loss + self._config.kl_beta * kl.mean()
-
-    # 更新
-    self._optimizer.zero_grad()
-    loss.backward()
-    clip_grad_norm_(self._trainable_parameters, self._config.grad_clip_eps)
-    self._optimizer.step()
-
-    return loss.item()
-```
-关键点：
-
-- old_logp 保持 (B*G, R) 形状，不要丢 R 维
-
-- 优势广播到每 token，已经是 (B*G, R)
-
-- KL 必须在带梯度环境下重算（不能用采样时的 KL）
-
-- 没有 value_loss
-### GRPO 与 PPO 对比
-
-| 步骤 | PPO | GRPO |
-|---|---|---|
-| 采样 | 1 个/prompt | G 个/prompt |
-| 展平 | `(B, P+R)` | `(B*G, P+R)` |
-| Critic 前向 | ✅ | ❌ |
-| 优势 | GAE `(B, R)` | 组内归一化 `(B, G)` |
-| 优势广播 | 不需要（已 token 级） | 需要 broadcast 到 `(B*G, R)` |
-| 损失 | `policy_loss + 0.5 * value_loss` | `policy_loss + β * KL` |
-| Checkpoint | Actor + Critic | 只 Actor |
-
 ### 适用场景
 
 | 场景 | 推荐 |
@@ -1757,22 +1507,840 @@ $$
 A_i = \frac{r_i - \mathrm{mean}(r)}{\mathrm{std}(r)}
 $$
 
-和 PPO 的区别：
-
-| 维度 | PPO | GRPO |
-|---|---|---|
-| Critic | ✅ | ❌ |
-| 优势 | GAE（需 $V(s)$） | 组内归一化 |
-| 采样 | 1 个/prompt | G 个/prompt |
-| 模型数 | 4 | 3 |
-| 显存 | 高 | 省 1 个 Critic |
-| 策略损失 | clip | 一样 |
-| KL 惩罚 | ✅ | 一样 |
-
-关键：
-
 - 策略损失、KL 惩罚、clip 都和 PPO 完全一样
-- 唯一区别是优势的计算方式
-- 去掉 Critic，用同组回答的相对排名代替
+- 唯一区别是优势的计算方式：去掉 Critic，用同组回答的相对排名代替
 
 GRPO 是显存有限时的最佳选择，尤其适合可验证任务（数学、代码）。
+
+---
+
+# 第四章：Agentic RL
+
+## 4.1 两者的定位关系
+
+Agentic RL 不是 LLM RL 的替代，而是**在 LLM RL 基础上增加了"环境交互"这一维度**。
+
+```
+┌──────────────────────────────────────────────────┐
+│                RL 后训练（Post-Training）          │
+│                                                  │
+│  ┌────────────────┐   ┌────────────────────┐     │
+│  │     LLM RL     │   │     Agentic RL     │     │
+│  │                │   │                    │     │
+│  │  - RLHF        │   │  - Search-R1       │     │
+│  │  - DPO         │   │  - Tool RL         │     │
+│  │  - PPO/GRPO    │   │  - Code RL         │     │
+│  │  （单轮）       │   │  - GUI Agent       │     │
+│  │                │   │  （多轮 + 工具）     │     │
+│  └────────────────┘   └────────────────────┘     │
+│              ↑                   ↑               │
+│              └─────── 共享 ──────┘               │
+│              算法内核（PPO/GRPO）                 │
+│              SFT 后起点                          │
+└──────────────────────────────────────────────────┘
+```
+
+**一句话**：Agentic RL = LLM RL + 环境交互 + 多轮轨迹。
+
+---
+
+## 4.2 LLM RL 流程
+
+### 标准流程
+
+```
+Prompt → LLM 生成 → Response → Reward → 更新
+        └────────── 单轮 ──────────┘
+```
+
+**特点**：
+
+- 一次生成，一次打分
+- 序列是 `[prompt | response]` 两段
+- 奖励来自 RM 或规则
+- 算法：PPO / GRPO / DPO / RLHF
+
+### 关键组件
+
+| 组件 | 职责 |
+|---|---|
+| Actor | 策略模型（生成 response） |
+| Critic | 价值估计（PPO 用，GRPO 无） |
+| Reference | KL 约束（可选） |
+| Reward Model | 打分 |
+| Rollout | 单轮生成 |
+
+### 典型算法
+
+| 算法 | 奖励 | 信用分配 |
+|---|---|---|
+| PPO | RM + 逐 token KL | Token 级 GAE |
+| GRPO | 结果奖励 | 轨迹级（组内归一化） |
+| DPO | 偏好对 | — |
+| RLHF | RM | Token 级 |
+
+---
+
+## 4.3 Agentic RL 流程
+
+### 标准流程
+
+```
+Prompt
+   ↓
+┌──────────────────────────────────────┐
+│             多轮循环                   │
+│  LLM 生成 → 解析动作 → 工具执行         │
+│    ↑                        ↓        │
+│    └────── 拼 observation ←─┘        │
+│        直到 done 或 max_turns          │
+└──────────────────────────────────────┘
+   ↓
+完整轨迹 → Reward → 更新
+```
+
+### 一条轨迹的结构
+
+```
+[prompt | gen1 | info1 | gen2 | info2 | gen3]
+   0       1       0       1       0       1
+   ↑       ↑       ↑       ↑       ↑       ↑
+数据集     LLM     工具     LLM     工具     LLM
+          生成     返回     生成     返回     生成
+
+loss_mask: 0=不参与loss, 1=参与loss
+```
+
+### 关键组件
+
+| 组件 | 职责 | 相比 LLM RL 的差异 |
+|---|---|---|
+| Actor | 策略模型 | 生成多段，非一次性 |
+| Rollout Engine | 多轮采样 | **新增**：调工具、拼 observation |
+| Environment | 环境交互 | **新增** |
+| ToolRouter | 解析动作 | **新增** |
+| Reward | 打分 | 更复杂（多维） |
+
+### 完整训练循环
+
+```python
+for sample in batch:
+    # 1. 采样 G 条轨迹
+    trajectories = [engine.rollout(sample) for _ in range(G)]
+
+    # 2. 组内归一化算 advantage
+    rewards = [t.reward for t in trajectories]
+    advantages = (rewards - mean) / std
+
+    # 3. 逐条算 loss
+    for traj, adv in zip(trajectories, advantages):
+        new_logp = actor(traj.input_ids)
+        ratio = exp(new_logp - traj.old_log_probs)
+        policy_loss = -min(ratio * adv, clip(ratio) * adv)
+        loss = (policy_loss * traj.loss_mask).sum() / traj.loss_mask.sum()
+
+    # 4. 更新
+    loss.backward()
+    optimizer.step()
+```
+
+---
+
+## 4.4 核心差异对比
+
+### 数据流差异
+
+| 维度 | LLM RL | Agentic RL |
+|---|---|---|
+| 序列结构 | `[prompt \| response]` | `[prompt \| gen \| info \| gen \| ...]` |
+| 段数 | 2 段 | 2N+1 段（N=工具调用次数） |
+| 长度 | 固定或可预测 | 变长，不可预测 |
+| loss_mask | 只有 prompt 段为 0 | prompt + 所有 info 段为 0 |
+| 生成次数 | 1 次 | N 次（多轮） |
+
+### 算法差异
+
+| 维度 | LLM RL | Agentic RL |
+|---|---|---|
+| 算法内核 | PPO / GRPO / DPO | 相同 |
+| advantage 粒度 | Token 级（PPO）或轨迹级（GRPO） | 轨迹级为主 |
+| 归一化分母 | response_mask.sum() | loss_mask.sum()（排除 info 段） |
+| 批量前向 | 可（等长 pad） | 通常不行（变长） |
+
+### 奖励差异
+
+| 维度 | LLM RL | Agentic RL |
+|---|---|---|
+| 奖励来源 | RM 为主 | 可验证奖励为主 |
+| 奖励粒度 | 轨迹级 | 轨迹级 / 步骤级 |
+| 奖励设计 | 相对成熟 | 核心难点 |
+| reward hacking | 存在 | 更严重（可钻工具空子） |
+
+### 工程差异
+
+| 维度 | LLM RL | Agentic RL |
+|---|---|---|
+| Rollout | 简单，一次生成 | 复杂，多轮 + 工具调用 |
+| 推理引擎 | HF generate 够用 | vLLM / SGLang 更常见 |
+| 权重同步 | 不需要（同模型） | vLLM 场景需要 |
+| 环境交互 | 无 | 网络调用 / 沙箱 / 浏览器 |
+| 异步训练 | 少见 | 常见（rollout 慢） |
+
+---
+
+## 4.5 位置关系
+
+### 训练阶段中的位置
+
+```
+预训练（Pretraining）
+    ↓
+SFT（指令微调）
+    ↓
+┌───────────────────────────────────┐
+│       RL 后训练（并列的多种）        │
+│  ├─ RLHF（通用偏好）               │
+│  ├─ DPO（偏好对）                  │
+│  ├─ LLM RL（单轮推理）             │
+│  └─ Agentic RL（多轮工具）         │
+└───────────────────────────────────┘
+    ↓
+部署
+```
+
+关键：Agentic RL 和 RLHF 是并列关系——都是 RL，都在 SFT 之后，区别在奖励来源和优化目标。
+
+### 实践顺序
+
+```
+1. 基座模型（预训练）
+2. Chat Template（tokenizer 配置）
+3. 通用 SFT + RLHF（模型发布方做）
+   → 发布：Qwen2.5-Instruct
+4. 工具调用 SFT（应用方做，可选，冷启动）
+5. Agentic RL（应用方做，核心）
+```
+
+### 和 FC 能力的关系
+
+| 阶段 | 解决什么 |
+|---|---|
+| Chat Template | token 层面支持 `<tool_call>` |
+| SFT | 格式 + 粗决策 |
+| RLHF | 通用偏好 |
+| Agentic RL | 特定工具集下的最优策略 |
+
+Agentic RL 是在已具备 FC 能力的模型上，针对具体工具集做进一步优化。
+
+---
+
+## 4.6 共享的算法内核
+
+### GRPO 在两种场景下完全一致
+
+```python
+# 公式完全相同
+ratio = exp(new_logp - old_logp)
+surr1 = ratio * advantage
+surr2 = clamp(ratio, 1-eps, 1+eps) * advantage
+policy_loss = -min(surr1, surr2)
+kl = new_logp - ref_logp
+loss = policy_loss + beta * kl
+```
+
+### 唯一差异：序列构造
+
+| 项 | LLM RL | Agentic RL |
+|---|---|---|
+| input_ids | `[prompt \| response]` | `[prompt \| gen \| info \| gen \| ...]` |
+| loss_mask | prompt 段 0，response 段 1 | prompt + info 段 0，gen 段 1 |
+| old_log_probs | response 段的 logprob | 所有 gen 段的 logprob，info 段填 0 |
+
+### Agentic RL 的三个工程要点
+
+1. **mask 正确**：info 段必须 mask=0，否则模型学会"复述检索结果"
+2. **偏移对齐**：logprob、loss_mask 都要偏移一位
+3. **变长处理**：无法批量 stack，通常逐条 forward
+
+---
+
+## 4.7 奖励与信用分配
+
+### 奖励的三个层次
+
+```
+┌──────────────────────────────────────┐
+│ 结果奖励（Outcome Reward）             │
+│  最终答案对不对（EM / 测试通过率）      │
+│  最稀疏，最难学，但最可靠              │
+├──────────────────────────────────────┤
+│ 过程奖励（Process Reward）            │
+│  中间步骤对不对（推理链、工具调用）      │
+│  稠密，好学好，但需要标注或 PRM        │
+├──────────────────────────────────────┤
+│ 格式奖励（Format Reward）             │
+│  有没有用对标签、有没有遵守协议         │
+│  最稠密，塑形，但不该主导              │
+└──────────────────────────────────────┘
+```
+
+权重设计：结果奖励 1.0，过程/格式 0.1~0.3，惩罚 < 0.1。
+
+### 信用分配的四种方案
+
+| 方案 | 粒度 | 适用 |
+|---|---|---|
+| 轨迹级（GRPO） | 整条轨迹一个标量 | 短轨迹（< 5 轮） |
+| Token 级（PPO/GAE） | 每个 token | 有 token 级奖励 |
+| 步骤级（GiGPO） | 每次工具调用一步 | 长轨迹（> 10 轮） |
+| Turn 级 | 每轮对话 | 多轮 Agent |
+
+### 子 Agent 场景
+
+当 Harness 有子 Agent 时，问题升级为多智能体协作信用分配：
+
+| 方法 | 核心思想 |
+|---|---|
+| 反事实信用分配 | 对比"移除某 Agent"前后的结果差异 |
+| Shapley 值 | 公平分配，但复杂度指数级 |
+| 树状信用分配 | 将交互建模为树，逆向传播优势 |
+| 分层 RL | Manager 定目标，Worker 执行 |
+
+---
+
+## 4.8 工程架构差异
+
+### LLM RL 架构
+
+```
+┌────────────────────────────────┐
+│  Trainer                       │
+│  - Dataset                     │
+│  - Actor                       │
+│  - Reward Model                │
+│  - Rollout（单轮）              │
+│  - 训练循环                    │
+└────────────────────────────────┘
+```
+
+### Agentic RL 架构
+
+```
+┌───────────────────────────────────────────┐
+│  Trainer                                  │
+│  - 训练循环                                │
+│  - advantage 计算                         │
+├───────────────────────────────────────────┤
+│  Rollout Engine                           │
+│  - 多轮循环                                │
+│  - loss_mask 维护                         │
+│  - old_log_probs 收集                     │
+├───────────────────────────────────────────┤
+│  Environment                              │
+│  - 工具执行                                │
+│  - 状态维护                                │
+├───────────────────────────────────────────┤
+│  ToolRouter                               │
+│  - 解析 LLM 输出                           │
+│  - 路由到工具                              │
+├───────────────────────────────────────────┤
+│  RewardContextBuilder + RewardFn          │
+│  - 从轨迹构建 reward 所需信息              │
+└───────────────────────────────────────────┘
+```
+
+### 关键抽象
+
+| 抽象 | 职责 |
+|---|---|
+| Environment | 工具执行 + 状态维护，纯执行 |
+| ToolRouter | 文本 → Action 解析 |
+| Tool | 参数解析 + 执行 + observation 格式化 |
+| RewardContextBuilder | 从 trace 构建 reward ctx |
+| InferenceBackend | 生成 + 权重同步（HF / vLLM） |
+| RolloutEngine | 编排多轮循环 |
+
+### 解耦原则
+
+1. **Environment 不知道 reward**：只返回 (obs, done)
+2. **Engine 不知道 ctx 字段**：只填 RolloutTrace
+3. **Router 不做执行**：只做识别
+4. **Tool 不做路由**：只管执行
+5. **算法变化不改 Engine**：改 Trainer 的 advantage_fn / loss_fn
+
+---
+
+## 4.9 常见坑
+
+### 数据与 mask
+
+| 坑 | 后果 | 解法 |
+|---|---|---|
+| info 段参与 loss | 模型学"复述检索结果"，训练崩 | loss_mask 屏蔽 info 段 |
+| logprob 偏移没对齐 | ratio 全错 | logp[:-1] 对 input_ids[1:] |
+| 混用 attention_mask 和 loss_mask | loss 计算错误 | 严格区分 |
+| decode 再 encode 不一致 | old_log_probs 对不上 | 维护 token 序列，不重建字符串 |
+
+### 显存
+
+| 坑 | 解法 |
+|---|---|
+| 没开梯度检查点 | gradient_checkpointing_enable() |
+| LoRA 场景忘加 enable_input_require_grads | 显式加 |
+| batch 太大 | 逐 group backward + 梯度累积 |
+| 序列太长 | 收紧 max_turns / max_new_tokens |
+| 参考模型占用 | kl_beta=0 时不加载 |
+
+### 训练稳定性
+
+| 坑 | 解法 |
+|---|---|
+| 全对全错，advantage=0 | 加格式奖励、课程学习 |
+| Reward hacking | KL 惩罚、对抗样本、人工审核 |
+| 多轮梯度爆炸 | 过滤"无效轮次"（SimpleTIR 思路） |
+| 冷启动太难 | 先做轻量 SFT，再 RL |
+
+---
+
+## 4.10 实践路线建议
+
+### 从 LLM RL 迁移到 Agentic RL
+
+```
+1. 复用算法内核（GRPO / PPO）
+2. 改造 Rollout：加入多轮循环
+3. 新增 Environment / ToolRouter / Tool
+4. 维护 loss_mask（info 段为 0）
+5. 奖励设计：先做结果奖励，再加格式/过程
+6. 工程优化：梯度检查点、批量 loss、vLLM
+```
+
+### 推荐顺序
+
+| 阶段 | 目标 | 关键点 |
+|---|---|---|
+| 1 | 跑通单工具（Search-R1） | 理解多轮 + mask |
+| 2 | 加格式奖励塑形 | reward 权重设计 |
+| 3 | 扩展到多工具（Tool RL） | 路由 + 工具集 |
+| 4 | 加过程奖励 | 信用分配 |
+| 5 | 多 Agent / 子 Agent | 协作信用分配 |
+| 6 | 数据飞轮 | 自动化闭环 |
+
+### 参考论文
+
+| 论文 | 贡献 |
+|---|---|
+| Toolformer | 自监督工具学习（思想奠基） |
+| ToolRL | 系统研究奖励设计 |
+| ReTool | 冷启动 SFT + 结果导向 RL |
+| SimpleTIR | 多轮训练稳定性 |
+| Search-R1 | 多轮搜索 + 检索 token masking |
+| GiGPO | 步骤级信用分配 |
+
+---
+
+## 4.11 一句话总结
+
+| 维度 | 结论 |
+|---|---|
+| 关系 | Agentic RL 是 LLM RL 的扩展，不是替代 |
+| 共享 | 算法内核（PPO / GRPO）完全一致 |
+| 差异 | 序列结构、loss_mask、奖励、工程架构 |
+| 核心难点 | 奖励设计 + 信用分配 |
+| 工程核心 | 多轮 rollout + mask 维护 + 权重同步 |
+| 判断标准 | 是否涉及"环境交互"和"多轮决策" |
+
+一句话：Agentic RL = LLM RL + 环境交互。算法内核共享，工程架构扩展，奖励与信用分配是新的核心挑战。
+
+---
+
+# 第五章：Agentic RL：Tool RL
+
+## 5.1 背景
+
+ToolRL 将工具集成推理（TIR）建模为多步决策过程。模型在每一步生成 `<think>`、`<tool_call>`、`<response>`，环境执行工具调用并返回 `<obs>`。训练使用 GRPO，奖励设计是核心。
+
+奖励设计的目标：既奖励格式正确，也奖励工具调用内容正确，并且随着训练推进，逐渐把重点从格式转向正确性。
+
+信用分配的目标：把最终奖励归因到每一步的工具调用决策上，不依赖 critic，而是用**步骤级密集奖励 + GRPO 组内相对优势**。
+
+---
+
+## 5.2 奖励设计
+
+### 总体结构
+
+最终奖励由两部分组成：
+
+$$
+R_{\mathrm{final}} = R_{\mathrm{format}} + R_{\mathrm{correct}}
+$$
+
+- $R_{\mathrm{format}}$：格式奖励，检查输出结构是否正确。
+- $R_{\mathrm{correct}}$：正确性奖励，细粒度评估工具调用。
+
+经过动态缩放后，两部分会被映射到不同的目标区间，最终相加。
+
+---
+
+### 格式奖励
+
+格式奖励 $R_{\mathrm{format}} \in \{0,1\}$。
+
+检查模型输出是否按正确顺序包含：
+
+1. `<think>`
+2. `<tool_call>` 或 `<response>` 至少一个
+3. 若两者都有，`<tool_call>` 必须在 `<response>` 之前
+
+用状态机检查，顺序非法得 0，全部通过得 1。
+
+**例子**：
+
+```text
+<think>查询北京天气</think>
+<tool_call>
+{"name": "get_weather", "parameters": {"city": "Beijing", "date": "2026-10-12"}}
+</tool_call>
+<response>正在查询北京天气</response>
+```
+
+顺序正确，$R_{\mathrm{format}} = 1$。
+
+---
+
+### 正确性奖励
+
+正确性奖励 $R_{\mathrm{correct}} \in [-3,3]$，由三部分组成：
+
+$$
+r_{\mathrm{match}} = r_{\mathrm{name}} + r_{\mathrm{param}} + r_{\mathrm{value}}
+$$
+
+#### 工具名称匹配
+
+$$
+r_{\mathrm{name}} = \frac{|N_G \cap N_P|}{|N_G \cup N_P|} \in [0,1]
+$$
+
+- $N_G$：真实工具名集合
+- $N_P$：预测工具名集合
+- 本质是 Jaccard 相似度
+
+**例子**：
+- 真实：`{get_weather}`
+- 预测：`{get_weather}` → $r_{\mathrm{name}} = 1$
+- 预测：`{search}` → $r_{\mathrm{name}} = 0$
+- 真实：`{get_weather, get_air_quality}`，预测命中一个 → $r_{\mathrm{name}} = 1/2 = 0.5$
+
+#### 参数名称匹配
+
+$$
+r_{\mathrm{param}} = \sum_{G_j \in G} \frac{|\mathrm{keys}(P_G) \cap \mathrm{keys}(P_P)|}{|\mathrm{keys}(P_G) \cup \mathrm{keys}(P_P)|} \in [0,|G|]
+$$
+
+对每个真实工具调用，计算参数名集合的 Jaccard，再求和。
+
+**例子**：
+- 真实 $G_1$ 参数名：`{city, date}`
+- 预测 $P_1$ 参数名：`{city, date}` → 贡献 $2/2 = 1$
+- 预测：`{city}` → 贡献 $1/2 = 0.5$
+- 预测：`{query}` → 贡献 $0/2 = 0$
+
+#### 参数内容匹配
+
+$$
+r_{\mathrm{value}} = \sum_{G_j \in G} \sum_{k \in \mathrm{keys}(G_j)} \mathbb{1}[P_G[k] = P_P[k]]
+$$
+
+逐参数比较预测值与真实值，相等得 1，不等得 0。
+
+**例子**：
+- 真实：`{city: "Beijing", date: "2026-10-12"}`
+- 预测：`{city: "Beijing", date: "2026-10-12"}` → $r_{\mathrm{value}} = 2$
+- 预测：`{city: "Shanghai", date: "2026-10-12"}` → $r_{\mathrm{value}} = 1$
+
+比较时忽略类型差异：`5.0` 与 `"5"` 视为相等。推荐用 `Decimal` 统一归一化。
+
+#### 最优匹配与归一化
+
+多工具时，预测与真实之间要找**最优配对**，使 $r_{\mathrm{param}} + r_{\mathrm{value}}$ 之和最大。工具名匹配是集合层面的 Jaccard，不依赖配对。
+
+最大可能分数：
+
+$$
+S_{\max} = 1 + |G| + \sum_{G_j \in G} |\mathrm{keys}(G_j)|
+$$
+
+归一化：
+
+$$
+R_{\mathrm{correct}} = 6 \cdot \frac{r_{\mathrm{match}}}{S_{\max}} - 3 \in [-3,3]
+$$
+
+- 完全正确：$r_{\mathrm{match}} = S_{\max}$ → $R_{\mathrm{correct}} = 3$
+- 完全错误：$r_{\mathrm{match}} = 0$ → $R_{\mathrm{correct}} = -3$
+
+---
+
+### 动态奖励尺度
+
+设 $p = S_{\mathrm{current}} / S_{\mathrm{total}} \in [0,1]$，其中 $S_{\mathrm{current}}$ 是当前优化步数，$S_{\mathrm{total}}$ 是总优化步数。
+
+格式奖励目标区间：
+
+$$
+[L_f, U_f] = [-2 + p,\ 2 - p]
+$$
+
+映射：
+
+$$
+R_{\mathrm{format}}' = L_f + R_{\mathrm{format}} \cdot (U_f - L_f)
+$$
+
+正确性奖励目标区间：
+
+$$
+[L_c, U_c] = [-2 - p,\ 2 + p]
+$$
+
+映射：
+
+$$
+R_{\mathrm{correct}}' = L_c + \frac{R_{\mathrm{correct}} + 3}{6} \cdot (U_c - L_c)
+$$
+
+**平滑过渡效果**：
+
+| $p$ | 格式区间 | 正确性区间 | 格式正确奖励 | 完全正确奖励 |
+|---|---|---|---|---|
+| 0.0 | $[-2, 2]$ | $[-2, 2]$ | 2 | 2 |
+| 0.5 | $[-1.5, 1.5]$ | $[-2.5, 2.5]$ | 1.5 | 2.5 |
+| 1.0 | $[-1, 1]$ | $[-3, 3]$ | 1 | 3 |
+
+格式奖励的相对价值逐渐下降，正确性奖励的相对价值逐渐上升，没有跳变点。
+
+---
+
+## 5.3 信用分配
+
+### 步骤级奖励
+
+ToolRL 的多步轨迹被拆成**单步实例**。每个训练样本对应轨迹中的一步，`user_prompt` 包含之前的历史上下文，`outputs` 是该步的真实工具调用。
+
+因此，每一步的奖励直接由该步的预测与 ground truth 计算得到，不需要等待整条轨迹结束，也不需要 critic 做跨时间反向传播。
+
+Ground truth 来自 ToolACE、Hammer、xLAM 数据集，不是人工额外标注。
+
+---
+
+### GRPO 组内相对优势
+
+对每个查询 $Q$，模型生成一组响应：
+
+$$
+G_Q = \{A, (s_1, r_1), (s_2, r_2), \ldots, (s_n, r_n)\}
+$$
+
+其中 $r_i = R_{\mathrm{format}}'(s_i) + R_{\mathrm{correct}}'(s_i)$。
+
+计算组内均值和标准差：
+
+$$
+\mu_Q = \frac{1}{n} \sum_{i=1}^n r_i,\quad
+\sigma_Q = \sqrt{\frac{1}{n} \sum_{i=1}^n (r_i - \mu_Q)^2}
+$$
+
+归一化优势：
+
+$$
+A_i(s_i|Q) = \frac{r_i - \mu_Q}{\sigma_Q + \eta}
+$$
+
+高于组内平均的响应获得正优势，低于平均的获得负优势。
+
+---
+
+### 策略更新
+
+GRPO 目标函数：
+
+$$
+J_{\mathrm{GRPO}}(\theta) = \mathbb{E}_{Q\sim\mathcal{D}} \mathbb{E}_{s_i\sim\pi_\theta}
+\left[
+\min\left(
+\frac{\pi_\theta(s_i|Q)}{\pi_{\mathrm{old}}(s_i|Q)} A_i(s_i|Q),\ 
+\mathrm{clip}\left(\frac{\pi_\theta(s_i|Q)}{\pi_{\mathrm{old}}(s_i|Q)}, 1-\epsilon, 1+\epsilon\right) A_i(s_i|Q)
+\right)
+\right]
+$$
+
+- 正优势 → 提高该响应概率
+- 负优势 → 降低该响应概率
+- clip 限制更新幅度
+- 不使用 KL 惩罚项
+
+---
+
+## 5.4 完整例子
+
+### 场景设定
+
+查询 $Q$：查询北京 2026-10-12 的天气。
+
+真实工具调用 $G$：
+
+```json
+[
+  {
+    "name": "get_weather",
+    "parameters": {"city": "Beijing", "date": "2026-10-12"}
+  }
+]
+```
+
+$|G| = 1$，参数总数 = 2，$S_{\max} = 1 + 1 + 2 = 4$。
+
+模型对同一查询生成 4 个响应。
+
+---
+
+### 四个响应
+
+**响应 1：完全正确**
+
+```text
+<think>用户想知道北京天气</think>
+<tool_call>
+{"name": "get_weather", "parameters": {"city": "Beijing", "date": "2026-10-12"}}
+</tool_call>
+<response>正在查询北京天气</response>
+```
+
+**响应 2：工具名对，城市错**
+
+```text
+<think>用户想知道天气</think>
+<tool_call>
+{"name": "get_weather", "parameters": {"city": "Shanghai", "date": "2026-10-12"}}
+</tool_call>
+<response>正在查询上海天气</response>
+```
+
+**响应 3：工具名错**
+
+```text
+<think>搜索北京天气</think>
+<tool_call>
+{"name": "search", "parameters": {"query": "Beijing weather"}}
+</tool_call>
+<response>正在搜索</response>
+```
+
+**响应 4：格式错误**
+
+```text
+<tool_call>
+{"name": "calculator", "parameters": {"expression": "1+1"}}
+</tool_call>
+```
+
+---
+
+### 奖励计算
+
+假设当前训练进度 $p = 0.5$，动态缩放后。
+
+| 响应 | $R_{\mathrm{format}}$ | $r_{\mathrm{name}}$ | $r_{\mathrm{param}}$ | $r_{\mathrm{value}}$ | $r_{\mathrm{match}}$ | $R_{\mathrm{correct}}$ | 缩放后格式 | 缩放后正确性 | $R_{\mathrm{final}}$ |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | 1 | 1 | 2 | 4 | $6\cdot4/4-3=3$ | 1.5 | 2.5 | **4.0** |
+| 2 | 1 | 1 | 1 | 1 | 3 | $6\cdot3/4-3=1.5$ | 1.5 | 1.25 | **2.75** |
+| 3 | 1 | 0 | 0 | 0 | 0 | $-3$ | 1.5 | -2.5 | **-1.0** |
+| 4 | 0 | 0 | 0 | 0 | 0 | $-3$ | -1.5 | -2.5 | **-4.0** |
+
+计算细节：
+
+- 响应 1：$r_{\mathrm{name}}=1/1=1$，$r_{\mathrm{param}}=2/2=1$，$r_{\mathrm{value}}=1+1=2$，$r_{\mathrm{match}}=4$，$R_{\mathrm{correct}}=3$。
+- 响应 2：$r_{\mathrm{value}}=0+1=1$，$r_{\mathrm{match}}=3$，$R_{\mathrm{correct}}=1.5$。
+- 响应 3：工具名不匹配，参数名不匹配，$r_{\mathrm{match}}=0$，$R_{\mathrm{correct}}=-3$。
+- 响应 4：格式错误，$R_{\mathrm{format}}=0$，工具名和参数都不匹配，$R_{\mathrm{correct}}=-3$。
+
+缩放：$p=0.5$ 时，格式区间 $[-1.5, 1.5]$，正确性区间 $[-2.5, 2.5]$。
+- 格式缩放：$R_{\mathrm{format}}' = -1.5 + R_{\mathrm{format}} \cdot 3$。$R_{\mathrm{format}}=1$ → $1.5$；$R_{\mathrm{format}}=0$ → $-1.5$。
+- 正确性缩放：$R_{\mathrm{correct}}' = -2.5 + (R_{\mathrm{correct}}+3) \cdot 5 / 6$。
+  - $R_{\mathrm{correct}}=3$ → $-2.5 + 6 \cdot 5/6 = 2.5$
+  - $R_{\mathrm{correct}}=1.5$ → $-2.5 + 4.5 \cdot 5/6 = 1.25$
+  - $R_{\mathrm{correct}}=-3$ → $-2.5 + 0 = -2.5$
+
+---
+
+### 优势计算与更新
+
+四个响应的最终奖励：
+
+$$
+r = [4.0,\ 2.75,\ -1.0,\ -4.0]
+$$
+
+组内均值：
+
+$$
+\mu_Q = \frac{4.0 + 2.75 - 1.0 - 4.0}{4} = 0.4375
+$$
+
+标准差近似：
+
+$$
+\sigma_Q \approx 3.09
+$$
+
+归一化优势：
+
+| 响应 | $r_i$ | $A_i$ |
+|---|---|---|
+| 1 | 4.0 | $(4.0-0.4375)/3.09 \approx 1.15$ |
+| 2 | 2.75 | $(2.75-0.4375)/3.09 \approx 0.75$ |
+| 3 | -1.0 | $(-1.0-0.4375)/3.09 \approx -0.47$ |
+| 4 | -4.0 | $(-4.0-0.4375)/3.09 \approx -1.44$ |
+
+含义：
+
+- 响应 1 和 2 高于组内平均，获得正优势，被鼓励。
+- 响应 3 和 4 低于平均，获得负优势，被抑制。
+- 响应 1 的优势最大，提升幅度最大。
+
+策略更新时，GRPO 按照优势加权，提高响应 1 和 2 的生成概率，降低响应 3 和 4 的生成概率。
+
+---
+
+## 5.5 实现要点
+
+1. **格式奖励用状态机**：按 `<think>` → `<tool_call>` → `<response>` 顺序检查，非法顺序直接 0。
+2. **正确性奖励共享最优配对**：参数名和参数值用同一个配对，最大化 $r_{\mathrm{param}} + r_{\mathrm{value}}$。
+3. **参数值比较忽略类型**：用 `Decimal` 统一数字和数字字符串，`5.0` 与 `"5"` 相等。
+4. **动态缩放用训练步数**：$p = S_{\mathrm{current}} / S_{\mathrm{total}}$，$S_{\mathrm{current}}$ 是优化步，不是 epoch。
+5. **信用分配不依赖 critic**：步骤级奖励直接归因，GRPO 组内相对优势完成信用分配。
+6. **Ground truth 来自数据集**：ToolACE、Hammer、xLAM 已包含每步真实工具调用。
+7. **多工具并行调用**：`<tool_call>` 内可能包含多个 JSON 对象或数组，解析时要兼容。
+8. **不需要 SFT 初始化**：GRPO 冷启动通常优于 SFT 初始化，SFT 容易过拟合。
+
+---
+
+## 5.6 总结
+
+ToolRL 的奖励设计是：
+
+$$
+R_{\mathrm{final}} = R_{\mathrm{format}}' + R_{\mathrm{correct}}'
+$$
+
+其中 $R_{\mathrm{correct}}$ 细粒度分解为工具名、参数名、参数值，用最优匹配归一化到 $[-3,3]$，再通过动态尺度让格式奖励逐渐退场、正确性奖励逐渐主导。
+
+信用分配依靠：
+
+1. **步骤级奖励**：多步轨迹拆成单步实例，每步用数据集提供的真实工具调用作为 ground truth。
+2. **GRPO 组内归一化优势**：同一查询生成多个响应，按组内相对好坏计算优势。
+3. **策略梯度更新**：用优势加权，提高好响应的概率，降低差响应的概率。
+
+整个流程不需要 critic，也不需要人工逐步标注，依赖的是**密集步骤奖励 + 组内相对比较**。

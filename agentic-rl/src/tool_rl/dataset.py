@@ -12,8 +12,7 @@ from datasets import load_dataset
 from src.infra.dataset.dataset import BaseDataset, BaseSample
 from src.tool_rl.tools import ToolRegistryBuilder, ToolRLRouter
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-
+os.environ.pop("HF_ENDPOINT", None)
 
 @dataclass(frozen=True)
 class ToolRLSample(BaseSample):
@@ -37,17 +36,14 @@ class ToolRLSample(BaseSample):
 
 class ToolRLDataset(BaseDataset):
     """ToolRL 数据集。"""
-
-    REPO_ID = "emrecanacikgoz/ToolRL"
-
     def __init__(self, batch_size: int = 4, num_workers: int = 0):
         super().__init__(batch_size, num_workers)
 
-        raw_dataset = load_dataset(self.REPO_ID)
+        raw_dataset = load_dataset("emrecanacikgoz/ToolRL")
         raw_train_dataset = raw_dataset['train']
 
         self._tool_registry_builder = ToolRegistryBuilder()
-        self._tool_registry_builder.add_tools_from_dataset(raw_dataset)
+        self._tool_registry_builder.add_tools_from_dataset(raw_train_dataset)
 
         split = raw_train_dataset.train_test_split(test_size=0.1, seed=42)
         raw_train_dataset = split['train']
