@@ -42,9 +42,9 @@ class RolloutEngine(object):
         """从训练侧同步权重"""
         self._inference_backend.sync_weights(state_dict=state_dict)
 
-    def rollout(self, sample: BaseSample) -> Trajectory:
+    def rollout(self, current_step: int, sample: BaseSample) -> Trajectory:
         """生成一条完整轨迹（prompt -> reply -> action -> observation -> action -> ... -> final_answer)"""
-        reward_calc_ctx = RewardCalcContext() 
+        reward_calc_ctx = RewardCalcContext(current_step=current_step) 
         reward_calc_ctx.agent_full_trace.append(AgentTraceItem(a_type=AgentTraceType.INPUT, content=sample.user_prompt))
         # 1. 重置环境
         self._env.reset()

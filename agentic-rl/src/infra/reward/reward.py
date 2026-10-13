@@ -34,7 +34,8 @@ class AgentTraceItem:
 @dataclass
 class RewardCalcContext:
     """rollout采样时，计算奖励的上下文"""
-    agent_full_trace: List[AgentTraceItem] = field(default_factory=list)
+    current_step: int # 当前训练步数
+    agent_full_trace: List[AgentTraceItem] = field(default_factory=list)    # 单次完整轨迹
 
     def to_dict(self) -> dict:
         return {

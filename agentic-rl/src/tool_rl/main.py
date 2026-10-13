@@ -11,6 +11,7 @@ from src.tool_rl.reward import ToolRLReward
 
 
 def main():
+    EPOCH = 2
     BATCH_SIZE = 1
     MAX_TURNS = 5
     DEVICE = "cuda"
@@ -34,7 +35,7 @@ def main():
     )
 
     # 4. 构建奖励计算器
-    reward_fn = ToolRLReward()
+    reward_fn = ToolRLReward(total_steps=EPOCH * len(dataset.train_data_loader()))
 
     # 5. 构建训练器
     trainer = GRPOTrainer(
@@ -58,7 +59,7 @@ def main():
             ),
 
             # 训练
-            n_epoch=2,
+            n_epoch=EPOCH,
             learning_rate=1e-6,
             kl_beta=0,
             ratio_clip_eps=0.2,

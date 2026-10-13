@@ -214,7 +214,7 @@ class GRPOTrainer(CheckpointableTrainer):
         # 生成一组轨迹
         for _ in range(self._config.n_sample_group):
             # actor完整生成一次轨迹
-            trajectory = self._rollout_engine.rollout(sample=sample)
+            trajectory = self._rollout_engine.rollout(current_step=self._global_step, sample=sample)
             group_trajectories.append_trajectory(trajectory)
 
         # 组内归一化估计优势
@@ -352,7 +352,7 @@ class GRPOTrainer(CheckpointableTrainer):
         for batch in tqdm(test_data_loader, desc="Evaluating"):
             for sample in batch:
                 # 每个样本采样 1 条轨迹，traj.reward 已是 SearchR1Reward 打的 0/1 分
-                traj = self._rollout_engine.rollout(sample)
+                traj = self._rollout_engine.rollout(current_step=self._global_step, sample=sample)
                 rewards.append(traj.reward)
 
         acc = float(np.mean(rewards)) if rewards else 0.0
