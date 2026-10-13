@@ -45,10 +45,13 @@ class ToolRLDataset(BaseDataset):
 
         raw_dataset = load_dataset(self.REPO_ID)
         raw_train_dataset = raw_dataset['train']
-        raw_test_dataset = raw_dataset['test']
 
         self._tool_registry_builder = ToolRegistryBuilder()
         self._tool_registry_builder.add_tools_from_dataset(raw_dataset)
+
+        split = raw_train_dataset.train_test_split(test_size=0.1, seed=42)
+        raw_train_dataset = split['train']
+        raw_test_dataset  = split['test']
 
         self._train_data_loader = self._build_data_loader(
             raw_train_dataset, shuffle=True, collate_fn=self._collate_fn
